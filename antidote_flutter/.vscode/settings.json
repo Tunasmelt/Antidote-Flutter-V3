@@ -1,0 +1,11 @@
+{
+  "dart.flutterSdkPath": null,
+  "dart.flutterSdkPaths": [],
+  "dart.checkForSdkUpdates": true,
+  "files.exclude": {
+    "**/.git": true,
+    "**/.dart_tool": true,
+    "**/build": true
+  }
+}
+
