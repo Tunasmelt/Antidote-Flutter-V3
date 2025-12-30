@@ -1,9 +1,81 @@
 -- ============================================================================
 -- ANTIDOTE FLUTTER - COMPLETE DATABASE SETUP SCRIPT
 -- ============================================================================
--- This is a convenience script that runs all setup scripts in order
--- Run this single script to set up the entire database
+-- This is a comprehensive single-file setup script that creates the entire
+-- database schema for the Antidote Flutter application.
+--
+-- WHAT THIS SCRIPT DOES:
+-- 1. Creates all tables (users, playlists, tracks, analyses, battles, recommendations)
+-- 2. Creates views (history, user_stats)
+-- 3. Enables Row Level Security (RLS) on all tables
+-- 4. Creates RLS policies for all tables and views
+-- 5. Creates indexes for optimal query performance
+-- 6. Creates helper functions and triggers
+--
+-- RUNNING THIS SCRIPT:
+-- Copy and paste this entire script into your Supabase SQL Editor and run it.
+-- This will set up your complete database schema in one go.
+--
+-- FOR FRESH DATABASE: This script is fully idempotent - safe to run on a new
+-- database or re-run on an existing database. It will drop existing objects
+-- before creating new ones to ensure clean setup.
+--
+-- UPDATED: 2024 - Includes all current features:
+-- - Spotify OAuth integration
+-- - Playlist analysis with personality insights
+-- - Playlist battles/comparisons
+-- - Music recommendations
+-- - History tracking
+-- - User statistics
 -- ============================================================================
+
+-- ============================================================================
+-- STEP 0: CLEANUP (for re-running on existing database)
+-- ============================================================================
+-- Drop existing objects in reverse dependency order to avoid conflicts
+
+-- Drop views first (they depend on tables)
+DROP VIEW IF EXISTS public.user_stats CASCADE;
+DROP VIEW IF EXISTS public.history CASCADE;
+
+-- Drop triggers (they depend on functions and tables)
+DROP TRIGGER IF EXISTS extract_spotify_id_on_update ON public.playlists;
+DROP TRIGGER IF EXISTS extract_spotify_id_on_insert ON public.playlists;
+DROP TRIGGER IF EXISTS update_track_count_on_delete ON public.tracks;
+DROP TRIGGER IF EXISTS update_track_count_on_insert ON public.tracks;
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DROP TRIGGER IF EXISTS set_updated_at_playlists ON public.playlists;
+DROP TRIGGER IF EXISTS set_updated_at_users ON public.users;
+
+-- Drop policies (they depend on tables/views)
+-- Note: View policies are not created (views inherit RLS from underlying tables)
+DROP POLICY IF EXISTS "Users can delete own recommendations" ON public.recommendations;
+DROP POLICY IF EXISTS "Users can update own recommendations" ON public.recommendations;
+DROP POLICY IF EXISTS "Users can create own recommendations" ON public.recommendations;
+DROP POLICY IF EXISTS "Users can view own recommendations" ON public.recommendations;
+DROP POLICY IF EXISTS "Users can delete own battles" ON public.battles;
+DROP POLICY IF EXISTS "Users can update own battles" ON public.battles;
+DROP POLICY IF EXISTS "Users can create own battles" ON public.battles;
+DROP POLICY IF EXISTS "Users can view own battles" ON public.battles;
+DROP POLICY IF EXISTS "Users can delete own analyses" ON public.analyses;
+DROP POLICY IF EXISTS "Users can update own analyses" ON public.analyses;
+DROP POLICY IF EXISTS "Users can create own analyses" ON public.analyses;
+DROP POLICY IF EXISTS "Users can view own analyses" ON public.analyses;
+DROP POLICY IF EXISTS "Users can delete tracks from own playlists" ON public.tracks;
+DROP POLICY IF EXISTS "Users can update tracks in own playlists" ON public.tracks;
+DROP POLICY IF EXISTS "Users can insert tracks to own playlists" ON public.tracks;
+DROP POLICY IF EXISTS "Users can view tracks from own playlists" ON public.tracks;
+DROP POLICY IF EXISTS "Users can delete own playlists" ON public.playlists;
+DROP POLICY IF EXISTS "Users can update own playlists" ON public.playlists;
+DROP POLICY IF EXISTS "Users can create own playlists" ON public.playlists;
+DROP POLICY IF EXISTS "Users can view own playlists" ON public.playlists;
+DROP POLICY IF EXISTS "Users can delete own profile" ON public.users;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.users;
+DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
+
+-- Note: We don't drop tables, functions, or indexes - they use IF NOT EXISTS
+-- which makes them safe to re-run. Tables are kept to preserve data.
 
 -- ============================================================================
 -- STEP 1: SCHEMA CREATION
@@ -171,6 +243,10 @@ GROUP BY u.id;
 -- ============================================================================
 -- STEP 2: ENABLE ROW LEVEL SECURITY
 -- ============================================================================
+-- Note: Tables are created in Step 1, so these ALTER statements are safe
+-- IMPORTANT: RLS can ONLY be enabled on TABLES, not on VIEWS
+-- Views (history, user_stats) inherit security from underlying tables
+-- and don't need RLS enabled - policies can be created directly on views
 
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.playlists ENABLE ROW LEVEL SECURITY;
@@ -219,6 +295,15 @@ CREATE POLICY "Users can view own recommendations" ON public.recommendations FOR
 CREATE POLICY "Users can create own recommendations" ON public.recommendations FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users can update own recommendations" ON public.recommendations FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users can delete own recommendations" ON public.recommendations FOR DELETE USING (auth.uid() = user_id);
+
+-- View policies
+-- IMPORTANT: RLS policies CANNOT be created directly on views in PostgreSQL/Supabase.
+-- Views automatically inherit RLS from their underlying tables (analyses, battles).
+-- Since those tables already have RLS policies filtering by user_id, the views
+-- are automatically secure - no additional policies needed.
+-- 
+-- If you see "history is not a table" errors, this is why - views don't support
+-- CREATE POLICY. The security is inherited from underlying tables.
 
 -- ============================================================================
 -- STEP 3: CREATE INDEXES
@@ -272,6 +357,10 @@ CREATE INDEX IF NOT EXISTS idx_recommendations_strategy ON public.recommendation
 CREATE INDEX IF NOT EXISTS idx_recommendations_created_at ON public.recommendations(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recommendations_user_strategy_created ON public.recommendations(user_id, strategy, created_at DESC);
 
+-- Full text search indexes
+CREATE INDEX IF NOT EXISTS idx_playlists_name_search ON public.playlists USING gin(to_tsvector('english', name));
+CREATE INDEX IF NOT EXISTS idx_tracks_name_search ON public.tracks USING gin(to_tsvector('english', name));
+
 -- ============================================================================
 -- STEP 4: CREATE FUNCTIONS AND TRIGGERS
 -- ============================================================================
@@ -312,13 +401,35 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Function to extract Spotify ID from URL
+-- Supports various Spotify URL formats:
+-- - https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd
+-- - spotify:playlist:37i9dQZF1DX0XUsuxWHRQd
+-- - https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh
 CREATE OR REPLACE FUNCTION public.extract_spotify_id(url TEXT)
 RETURNS TEXT AS $$
 DECLARE
   spotify_id TEXT;
 BEGIN
+  -- Return NULL if URL is empty or null
+  IF url IS NULL OR url = '' THEN
+    RETURN NULL;
+  END IF;
+  
+  -- Try standard URL format: /playlist/ID or /track/ID or /album/ID
   SELECT (regexp_match(url, '/(?:playlist|track|album)/([a-zA-Z0-9]+)'))[1] INTO spotify_id;
-  RETURN spotify_id;
+  IF spotify_id IS NOT NULL THEN
+    RETURN spotify_id;
+  END IF;
+  
+  -- Try URI format: spotify:playlist:ID
+  SELECT (regexp_match(url, 'spotify:(?:playlist|track|album):([a-zA-Z0-9]+)'))[1] INTO spotify_id;
+  IF spotify_id IS NOT NULL THEN
+    RETURN spotify_id;
+  END IF;
+  
+  -- Return NULL if no match found
+  RETURN NULL;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 

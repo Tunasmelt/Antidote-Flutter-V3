@@ -3,11 +3,20 @@
 -- ============================================================================
 -- This script creates all necessary tables for the Antidote Flutter application
 -- Run this script in your Supabase SQL Editor
+-- 
+-- FOR FRESH DATABASE: This script is safe to run on a new database
+-- All tables use IF NOT EXISTS to prevent errors on re-runs
 -- ============================================================================
 
 -- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm"; -- For text search
+
+-- ============================================================================
+-- DROP EXISTING VIEWS (if re-running on existing database)
+-- ============================================================================
+DROP VIEW IF EXISTS public.user_stats CASCADE;
+DROP VIEW IF EXISTS public.history CASCADE;
 
 -- ============================================================================
 -- USERS TABLE

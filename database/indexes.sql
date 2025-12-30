@@ -3,6 +3,9 @@
 -- ============================================================================
 -- This script creates indexes to optimize query performance
 -- Run this AFTER schema.sql
+-- 
+-- FOR FRESH DATABASE: All indexes use IF NOT EXISTS, so this script is safe
+-- to run on a new database or re-run on an existing database
 -- ============================================================================
 
 -- ============================================================================

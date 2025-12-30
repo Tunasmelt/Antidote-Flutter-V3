@@ -3,7 +3,21 @@
 -- ============================================================================
 -- This script creates helper functions and automatic triggers
 -- Run this AFTER schema.sql
+-- 
+-- FOR FRESH DATABASE: This script drops existing triggers before creating new ones
+-- to ensure clean setup on a new database
 -- ============================================================================
+
+-- ============================================================================
+-- DROP EXISTING TRIGGERS (if re-running)
+-- ============================================================================
+DROP TRIGGER IF EXISTS extract_spotify_id_on_update ON public.playlists;
+DROP TRIGGER IF EXISTS extract_spotify_id_on_insert ON public.playlists;
+DROP TRIGGER IF EXISTS update_track_count_on_delete ON public.tracks;
+DROP TRIGGER IF EXISTS update_track_count_on_insert ON public.tracks;
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DROP TRIGGER IF EXISTS set_updated_at_playlists ON public.playlists;
+DROP TRIGGER IF EXISTS set_updated_at_users ON public.users;
 
 -- ============================================================================
 -- HELPER FUNCTIONS
@@ -88,15 +102,34 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Function to extract Spotify ID from URL
+-- Supports various Spotify URL formats:
+-- - https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd
+-- - spotify:playlist:37i9dQZF1DX0XUsuxWHRQd
+-- - https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh
 CREATE OR REPLACE FUNCTION public.extract_spotify_id(url TEXT)
 RETURNS TEXT AS $$
 DECLARE
   spotify_id TEXT;
 BEGIN
-  -- Extract Spotify playlist/track ID from URL
-  -- Pattern: https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd
+  -- Return NULL if URL is empty or null
+  IF url IS NULL OR url = '' THEN
+    RETURN NULL;
+  END IF;
+  
+  -- Try standard URL format: /playlist/ID or /track/ID or /album/ID
   SELECT (regexp_match(url, '/(?:playlist|track|album)/([a-zA-Z0-9]+)'))[1] INTO spotify_id;
-  RETURN spotify_id;
+  IF spotify_id IS NOT NULL THEN
+    RETURN spotify_id;
+  END IF;
+  
+  -- Try URI format: spotify:playlist:ID
+  SELECT (regexp_match(url, 'spotify:(?:playlist|track|album):([a-zA-Z0-9]+)'))[1] INTO spotify_id;
+  IF spotify_id IS NOT NULL THEN
+    RETURN spotify_id;
+  END IF;
+  
+  -- Return NULL if no match found
+  RETURN NULL;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 

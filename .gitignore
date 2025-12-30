@@ -1,17 +1,52 @@
-# Dependencies
+# ============================================================================
+# ANTIDOTE FLUTTER - ROOT .GITIGNORE
+# ============================================================================
+# Consolidated gitignore for the entire project
+# Includes rules for Node.js backend, Flutter frontend, and general files
+# ============================================================================
+
+# ============================================================================
+# DEPENDENCIES
+# ============================================================================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.packages
+.pub-cache/
+.pub/
 
-# Build output
+# ============================================================================
+# BUILD OUTPUT
+# ============================================================================
+# Backend build output
 dist/
-build/
 *.js.map
 *.d.ts.map
+*.tsbuildinfo
 
-# Environment variables
-# Ignore actual environment files with secrets
+# Flutter build output
+build/
+**/build/
+**/generated_plugin_registrant.dart
+flutter_*.png
+linked_*.json
+unlinked_*.json
+
+# ============================================================================
+# ENVIRONMENT VARIABLES
+# ============================================================================
+# Backend: ALL .env files should be ignored (no exceptions except .env.example)
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Frontend: Only ignore files with actual secrets
+frontend/.env.local
+frontend/*.env.local
+frontend/.env.*.local
+
+# Root level
 .env
 .env.local
 .env.*.local
@@ -19,56 +54,66 @@ build/
 .env.test.local
 .env.production.local
 
-# Note: antidote_flutter/.env.development and antidote_flutter/.env.production
+# Note: frontend/.env.development and frontend/.env.production
 # contain only placeholder values (no secrets) and are tracked in git
-# Backend .env files are always ignored
 
-# IDE - Keep .vscode with shared settings but ignore user-specific files
+# ============================================================================
+# IDE & EDITOR FILES
+# ============================================================================
+# IntelliJ IDEA
 .idea/
-*.swp
-*.swo
-*~
+*.iml
+*.ipr
+*.iws
 
 # VS Code - ignore user-specific files but keep shared settings
 .vscode/*.log
 .vscode/**/vscodevim.vim
 .vscode/settings.json.user
 
-# OS
+# Other editors
+*.swp
+*.swo
+*~
+.atom/
+.buildlog/
+.history
+.svn/
+
+# ============================================================================
+# OPERATING SYSTEM
+# ============================================================================
 .DS_Store
 Thumbs.db
 
-# Logs
+# ============================================================================
+# LOGS
+# ============================================================================
 logs/
 *.log
 
-# TypeScript
-*.tsbuildinfo
-
-# Testing
+# ============================================================================
+# TESTING & COVERAGE
+# ============================================================================
 coverage/
 .nyc_output/
 
-# Temporary files
+# ============================================================================
+# TEMPORARY FILES
+# ============================================================================
 tmp/
 temp/
 *.tmp
+migrate_working_dir/
 
-# AI-assisted coding tools
-.qodo/
-
-# Flutter
+# ============================================================================
+# FLUTTER/DART SPECIFIC
+# ============================================================================
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
-.packages
-.pub-cache/
-.pub/
-build/
-flutter_*.png
-linked_*.json
-unlinked_*.json
-**/generated_plugin_registrant.dart
+**/doc/api/
+**/ios/Flutter/.last_build_id
 
 # Android
 **/android/**/gradle-wrapper.jar
@@ -80,6 +125,9 @@ unlinked_*.json
 **/android/**/GeneratedPluginRegistrant.java
 **/android/key.properties
 *.jks
+**/android/app/debug
+**/android/app/profile
+**/android/app/release
 
 # iOS
 **/ios/**/*.mode1v3
@@ -98,7 +146,6 @@ unlinked_*.json
 **/ios/**/profile
 **/ios/**/xcuserdata
 **/ios/.generated/
-**/ios/Flutter/.last_build_id
 **/ios/Flutter/App.framework
 **/ios/Flutter/Flutter.framework
 **/ios/Flutter/Flutter.podspec
@@ -118,6 +165,16 @@ unlinked_*.json
 **/web/*.js.deps
 **/web/*.js.map
 
-# Exclude if already present
+# Symbolication & Obfuscation
+app.*.symbols
+app.*.map.json
+
+# ============================================================================
+# MISC
+# ============================================================================
+*.class
+*.pyc
 pubspec.lock
 
+# AI-assisted coding tools
+.qodo/
