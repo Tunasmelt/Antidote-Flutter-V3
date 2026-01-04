@@ -11,9 +11,8 @@ class AuthScreen extends ConsumerStatefulWidget {
   ConsumerState<AuthScreen> createState() => _AuthScreenState();
 }
 
-class _AuthScreenState extends ConsumerState<AuthScreen> 
+class _AuthScreenState extends ConsumerState<AuthScreen>
     with SingleTickerProviderStateMixin {
-  
   late TabController _tabController;
   final _loginFormKey = GlobalKey<FormState>();
   final _signupFormKey = GlobalKey<FormState>();
@@ -24,16 +23,39 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
   final _signupConfirmPasswordController = TextEditingController();
   final _forgotPasswordEmailController = TextEditingController();
   final _forgotPasswordFormKey = GlobalKey<FormState>();
-  
+
   bool _isLoading = false;
   bool _isResettingPassword = false;
-  
+
+  // Password validation helper
+  String? _validatePassword(String? value) {
+    if (value == null || value.isEmpty) {
+      return 'Please enter a password';
+    }
+    if (value.length < 8) {
+      return 'Password must be at least 8 characters';
+    }
+    if (!value.contains(RegExp(r'[A-Z]'))) {
+      return 'Password must contain at least one uppercase letter';
+    }
+    if (!value.contains(RegExp(r'[a-z]'))) {
+      return 'Password must contain at least one lowercase letter';
+    }
+    if (!value.contains(RegExp(r'[0-9]'))) {
+      return 'Password must contain at least one number';
+    }
+    if (!value.contains(RegExp(r'[!@#$%^&*(),.?":{}|<>]'))) {
+      return 'Password must contain at least one special character';
+    }
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
   }
-  
+
   @override
   void dispose() {
     _tabController.dispose();
@@ -45,19 +67,19 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     _forgotPasswordEmailController.dispose();
     super.dispose();
   }
-  
+
   Future<void> _handleLogin() async {
     if (!_loginFormKey.currentState!.validate()) return;
-    
+
     setState(() => _isLoading = true);
-    
+
     try {
       final authService = ref.read(authServiceProvider);
       final user = await authService.signInWithEmail(
         _loginEmailController.text.trim(),
         _loginPasswordController.text,
       );
-      
+
       if (mounted) {
         setState(() => _isLoading = false);
         if (user != null) {
@@ -76,11 +98,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       }
     }
   }
-  
+
   Future<void> _handleSignup() async {
     if (!_signupFormKey.currentState!.validate()) return;
-    
-    if (_signupPasswordController.text != _signupConfirmPasswordController.text) {
+
+    if (_signupPasswordController.text !=
+        _signupConfirmPasswordController.text) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Passwords do not match'),
@@ -89,20 +112,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       );
       return;
     }
-    
+
     setState(() => _isLoading = true);
-    
+
     try {
       final authService = ref.read(authServiceProvider);
       final user = await authService.signUpWithEmail(
         _signupEmailController.text.trim(),
         _signupPasswordController.text,
       );
-      
+
       if (mounted) {
         setState(() => _isLoading = false);
         if (user != null) {
-          context.go('/');
+          // Show prompt to connect Spotify
+          _showSpotifyConnectionPrompt();
         }
       }
     } catch (e) {
@@ -118,9 +142,90 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     }
   }
 
+  Future<void> _showSpotifyConnectionPrompt() async {
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.cardBackground,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        title: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: const Color(0xFF1DB954),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.music_note,
+                color: Colors.white,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Connect Spotify',
+                style: TextStyle(
+                  color: AppTheme.textPrimary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'Connect your Spotify account to unlock all features:\n\n'
+          '• Analyze your playlists\n'
+          '• Battle playlists\n'
+          '• Get personalized recommendations\n'
+          '• View your Spotify playlists\n\n'
+          'You can skip this and connect later from Settings.',
+          style: TextStyle(
+            color: AppTheme.textMuted,
+            fontSize: 14,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              context.go('/');
+            },
+            child: const Text(
+              'Skip',
+              style: TextStyle(color: AppTheme.textMuted),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _handleSpotifyAuth();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1DB954),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            child: const Text(
+              'Connect Now',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showForgotPasswordDialog() async {
     _forgotPasswordEmailController.clear();
-    
+
     return showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -155,7 +260,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                 decoration: InputDecoration(
                   labelText: 'Email',
                   labelStyle: const TextStyle(color: AppTheme.textMuted),
-                  prefixIcon: const Icon(Icons.email, color: AppTheme.textMuted),
+                  prefixIcon:
+                      const Icon(Icons.email, color: AppTheme.textMuted),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(
@@ -200,7 +306,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             ),
           ),
           ElevatedButton(
-            onPressed: _isResettingPassword ? null : () => _handleForgotPassword(context),
+            onPressed: _isResettingPassword
+                ? null
+                : () => _handleForgotPassword(context),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppTheme.primary,
               shape: RoundedRectangleBorder(
@@ -232,12 +340,13 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     if (!mounted) return;
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(dialogContext, rootNavigator: false);
-    
+
     setState(() => _isResettingPassword = true);
 
     try {
       final authService = ref.read(authServiceProvider);
-      await authService.resetPassword(_forgotPasswordEmailController.text.trim());
+      await authService
+          .resetPassword(_forgotPasswordEmailController.text.trim());
 
       if (!mounted) return;
       setState(() => _isResettingPassword = false);
@@ -262,11 +371,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       );
     }
   }
-  
+
   Future<void> _handleSpotifyAuth() async {
     try {
       final authService = ref.read(authServiceProvider);
-      
+
       // Check if already connected
       final isConnected = await authService.isSpotifyConnected();
       if (isConnected) {
@@ -281,16 +390,28 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
         return;
       }
 
-      // Connect Spotify
-      await authService.connectSpotify();
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Spotify connected successfully'),
-            backgroundColor: AppTheme.cardBackground,
-          ),
-        );
+      // Check if user is authenticated (Supabase session exists)
+      final isAuthenticated = ref.read(isAuthenticatedProvider);
+
+      if (isAuthenticated) {
+        // User is authenticated - just connect Spotify to existing account
+        await authService.connectSpotify();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Spotify connected successfully'),
+              backgroundColor: AppTheme.success,
+            ),
+          );
+        }
+      } else {
+        // User is not authenticated - create Supabase user via Spotify OAuth
+        // This will trigger OAuth flow and create user in callback handler
+        await authService.signInWithSpotify();
+
+        // Note: OAuth callback will handle user creation and navigation
+        // We don't show success message here as callback handler will do it
       }
     } catch (e) {
       if (mounted) {
@@ -337,15 +458,20 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             ),
           ),
         ),
-        
+
         // Main Content
         SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: EdgeInsets.only(
+            top: MediaQuery.of(context).padding.top + 24,
+            left: 24,
+            right: 24,
+            bottom: MediaQuery.of(context).padding.bottom + 24,
+          ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const SizedBox(height: 60),
-              
+              const SizedBox(height: 16),
+
               // Logo and Title
               Container(
                 width: 64,
@@ -375,19 +501,19 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               Text(
                 'ANTIDOTE',
                 style: Theme.of(context).textTheme.displayLarge?.copyWith(
-                  color: AppTheme.textPrimary,
-                ),
+                      color: AppTheme.textPrimary,
+                    ),
               ),
               const SizedBox(height: 8),
               Text(
                 'Cure your music fatigue',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppTheme.textMuted,
-                ),
+                      color: AppTheme.textMuted,
+                    ),
               ),
-              
+
               const SizedBox(height: 48),
-              
+
               // Tabs
               Container(
                 decoration: BoxDecoration(
@@ -411,9 +537,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                   ],
                 ),
               ),
-              
+
               const SizedBox(height: 24),
-              
+
               // Tab Views
               SizedBox(
                 height: 400,
@@ -425,9 +551,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                   ],
                 ),
               ),
-              
+
               const SizedBox(height: 24),
-              
+
               // Divider
               Row(
                 children: [
@@ -441,8 +567,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                     child: Text(
                       'Or continue with',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.textMuted,
-                      ),
+                            color: AppTheme.textMuted,
+                          ),
                     ),
                   ),
                   Expanded(
@@ -452,9 +578,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                   ),
                 ],
               ),
-              
+
               const SizedBox(height: 24),
-              
+
               // Spotify Button with connection status
               FutureBuilder<bool>(
                 future: ref.read(authServiceProvider).isSpotifyConnected(),
@@ -467,16 +593,16 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                       onPressed: isConnected ? null : _handleSpotifyAuth,
                       style: OutlinedButton.styleFrom(
                         side: BorderSide(
-                          color: isConnected 
-                            ? const Color(0xFF1DB954).withValues(alpha: 0.5)
-                            : Colors.white.withValues(alpha: 0.1),
+                          color: isConnected
+                              ? const Color(0xFF1DB954).withValues(alpha: 0.5)
+                              : Colors.white.withValues(alpha: 0.1),
                         ),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        backgroundColor: isConnected 
-                          ? const Color(0xFF1DB954).withValues(alpha: 0.1)
-                          : null,
+                        backgroundColor: isConnected
+                            ? const Color(0xFF1DB954).withValues(alpha: 0.1)
+                            : null,
                       ),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -497,14 +623,17 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            isConnected 
-                              ? 'Spotify Connected'
-                              : 'Continue with Spotify',
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: isConnected 
-                                ? const Color(0xFF1DB954)
-                                : AppTheme.textPrimary,
-                            ),
+                            isConnected
+                                ? 'Spotify Connected'
+                                : 'Continue with Spotify',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
+                                  color: isConnected
+                                      ? const Color(0xFF1DB954)
+                                      : AppTheme.textPrimary,
+                                ),
                           ),
                           if (isConnected) ...[
                             const SizedBox(width: 8),
@@ -520,7 +649,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                   );
                 },
               ),
-              
+
               const SizedBox(height: 40),
             ],
           ),
@@ -528,7 +657,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       ],
     );
   }
-  
+
   Widget _buildLoginForm() {
     return Form(
       key: _loginFormKey,
@@ -541,7 +670,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               labelText: 'Email',
               hintText: 'hello@example.com',
               labelStyle: const TextStyle(color: AppTheme.textMuted),
-              hintStyle: TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
+              hintStyle:
+                  TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(
@@ -582,7 +712,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               labelText: 'Password',
               hintText: '••••••••',
               labelStyle: const TextStyle(color: AppTheme.textMuted),
-              hintStyle: TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
+              hintStyle:
+                  TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(
@@ -653,21 +784,23 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                 child: Container(
                   alignment: Alignment.center,
                   child: _isLoading
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : Text(
+                          'Log In',
+                          style:
+                              Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
-                      )
-                    : Text(
-                        'Log In',
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
                 ),
               ),
             ),
@@ -676,7 +809,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       ),
     );
   }
-  
+
   Widget _buildSignupForm() {
     return Form(
       key: _signupFormKey,
@@ -689,7 +822,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               labelText: 'Email',
               hintText: 'hello@example.com',
               labelStyle: const TextStyle(color: AppTheme.textMuted),
-              hintStyle: TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
+              hintStyle:
+                  TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(
@@ -730,7 +864,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               labelText: 'Password',
               hintText: 'Create a password',
               labelStyle: const TextStyle(color: AppTheme.textMuted),
-              hintStyle: TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
+              hintStyle:
+                  TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(
@@ -754,15 +889,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             ),
             style: const TextStyle(color: AppTheme.textPrimary),
             obscureText: true,
-            validator: (value) {
-              if (value == null || value.isEmpty) {
-                return 'Please enter a password';
-              }
-              if (value.length < 6) {
-                return 'Password must be at least 6 characters';
-              }
-              return null;
-            },
+            validator: _validatePassword,
           ),
           const SizedBox(height: 16),
           TextFormField(
@@ -771,7 +898,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
               labelText: 'Confirm Password',
               hintText: 'Confirm your password',
               labelStyle: const TextStyle(color: AppTheme.textMuted),
-              hintStyle: TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
+              hintStyle:
+                  TextStyle(color: AppTheme.textMuted.withValues(alpha: 0.5)),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(
@@ -828,21 +956,23 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                 child: Container(
                   alignment: Alignment.center,
                   child: _isLoading
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : Text(
+                          'Create Account',
+                          style:
+                              Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
-                      )
-                    : Text(
-                        'Create Account',
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
                 ),
               ),
             ),
@@ -852,4 +982,3 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     );
   }
 }
-

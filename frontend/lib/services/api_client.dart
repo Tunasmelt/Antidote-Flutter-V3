@@ -5,6 +5,7 @@ import '../models/battle.dart';
 import '../config/env_config.dart';
 import '../services/cache_service.dart';
 import '../services/retry_interceptor.dart';
+import '../services/request_deduplication_interceptor.dart';
 import '../services/auth_service.dart';
 
 class ApiException implements Exception {
@@ -34,6 +35,9 @@ class ApiClient {
             'Accept': 'application/json',
           },
         )) {
+    // Add request deduplication interceptor (first to catch all requests)
+    _dio.interceptors.add(RequestDeduplicationInterceptor());
+
     // Add retry interceptor (before other interceptors)
     if (EnvConfig.enableRetryLogic) {
       _dio.interceptors.add(RetryInterceptor());
@@ -67,7 +71,7 @@ class ApiClient {
       },
       onError: (error, handler) async {
         // Handle Spotify token expiration (401)
-        if (error.response?.statusCode == 401 && 
+        if (error.response?.statusCode == 401 &&
             _needsSpotifyToken(error.requestOptions.path)) {
           // Try to refresh token and retry
           if (_authService != null) {
@@ -115,7 +119,7 @@ class ApiClient {
       },
       onResponse: (response, handler) async {
         // Cache successful GET responses
-        if (response.requestOptions.method == 'GET' && 
+        if (response.requestOptions.method == 'GET' &&
             EnvConfig.enableOfflineCache &&
             response.statusCode == 200) {
           final cacheKey = CacheService.generateCacheKey(
@@ -132,7 +136,8 @@ class ApiClient {
         if (error.type == DioExceptionType.connectionError) {
           return handler.reject(DioException(
             requestOptions: error.requestOptions,
-            error: 'Connection failed. Make sure the backend server is running on $baseUrl',
+            error:
+                'Connection failed. Make sure the backend server is running on $baseUrl',
             type: DioExceptionType.connectionError,
           ));
         }
@@ -208,12 +213,15 @@ class ApiClient {
       if (seedArtists != null) queryParams['seed_artists'] = seedArtists;
 
       // Spotify token will be added via interceptor header
-      final response = await _dio.get('/api/recommendations', queryParameters: queryParams);
+      final response =
+          await _dio.get('/api/recommendations', queryParameters: queryParams);
       if (response.data == null) {
         return [];
       }
       if (response.data is! List) {
-        throw ApiException(message: 'Invalid response format: expected array', statusCode: 500);
+        throw ApiException(
+            message: 'Invalid response format: expected array',
+            statusCode: 500);
       }
       return (response.data as List).map((json) {
         if (json is Map) {
@@ -275,6 +283,134 @@ class ApiClient {
     }
   }
 
+  Future<Map<String, dynamic>> getTopTracks(
+      {String timeRange = 'medium_term'}) async {
+    try {
+      final response = await _dio.get('/api/user/top-tracks',
+          queryParameters: {'time_range': timeRange});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> getTopArtists(
+      {String timeRange = 'medium_term'}) async {
+    try {
+      final response = await _dio.get('/api/user/top-artists',
+          queryParameters: {'time_range': timeRange});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> getRecentlyPlayed({int limit = 50}) async {
+    try {
+      final response = await _dio
+          .get('/api/user/recently-played', queryParameters: {'limit': limit});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> getSavedTracks(
+      {int limit = 50, int offset = 0}) async {
+    try {
+      final response = await _dio.get('/api/user/saved-tracks',
+          queryParameters: {'limit': limit, 'offset': offset});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> getSavedAlbums(
+      {int limit = 50, int offset = 0}) async {
+    try {
+      final response = await _dio.get('/api/user/saved-albums',
+          queryParameters: {'limit': limit, 'offset': offset});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> getEnhancedTasteProfile() async {
+    try {
+      final response = await _dio.get('/api/profile/taste');
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> analyzeMood({int limit = 20}) async {
+    try {
+      final response =
+          await _dio.post('/api/mood/analyze', data: {'limit': limit});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> generateMoodPlaylist(
+      {String? mood, int limit = 20}) async {
+    try {
+      final response = await _dio
+          .post('/api/mood/playlist', data: {'mood': mood, 'limit': limit});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> getListeningPersonality() async {
+    try {
+      final response = await _dio.get('/api/personality/listening');
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> optimizePlaylist(
+      {String? playlistId, String? url}) async {
+    try {
+      final response = await _dio.post('/api/playlists/optimize',
+          data: {'playlistId': playlistId, 'url': url});
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> generatePlaylist(
+      {String? type, String? mood, String? activity, int limit = 30}) async {
+    try {
+      final response = await _dio.post('/api/playlists/generate', data: {
+        'type': type,
+        'mood': mood,
+        'activity': activity,
+        'limit': limit,
+      });
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> getDiscoveryTimeline() async {
+    try {
+      final response = await _dio.get('/api/discovery/timeline');
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   Future<Map<String, dynamic>> createPlaylist({
     required String name,
     String? description,
@@ -314,6 +450,87 @@ class ApiClient {
     }
   }
 
+  Future<Map<String, dynamic>> createMergedPlaylist({
+    required String name,
+    String? description,
+    required List<String> trackIds,
+  }) async {
+    try {
+      final requestData = {
+        'name': name,
+        if (description != null) 'description': description,
+        'track_ids': trackIds,
+      };
+      if (_authService != null) {
+        final spotifyToken = await _authService.getSpotifyAccessToken();
+        if (spotifyToken != null) {
+          requestData['spotify_token'] = spotifyToken;
+        }
+      }
+
+      final response = await _dio.post(
+        '/api/playlists/merge',
+        data: requestData,
+      );
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  // Note: Analysis and Battle are automatically saved by backend when called with authentication
+  // These methods are kept for potential future use but are currently no-ops
+  // The backend saves to database automatically when user is authenticated
+
+  Future<Map<String, dynamic>> savePlaylist({
+    required String url,
+    String? name,
+    String? description,
+    String? coverUrl,
+  }) async {
+    try {
+      final requestData = {
+        'url': url,
+        if (name != null) 'name': name,
+        if (description != null) 'description': description,
+        if (coverUrl != null) 'coverUrl': coverUrl,
+      };
+
+      final response = await _dio.post(
+        '/api/playlists/save',
+        data: requestData,
+      );
+      return Map<String, dynamic>.from(response.data);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getUserSpotifyPlaylists() async {
+    try {
+      final response = await _dio.get('/api/spotify/playlists');
+      if (response.data == null) {
+        return [];
+      }
+      if (response.data is! List) {
+        return [];
+      }
+      // Filter out invalid entries and ensure all playlists have required fields
+      return (response.data as List)
+          .map((json) {
+            if (json is Map) {
+              return Map<String, dynamic>.from(json);
+            }
+            return null;
+          })
+          .where((playlist) => playlist != null && playlist['id'] != null)
+          .cast<Map<String, dynamic>>()
+          .toList();
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
   // Check if endpoint needs Spotify token
   bool _needsSpotifyToken(String path) {
     final spotifyEndpoints = [
@@ -321,8 +538,91 @@ class ApiClient {
       '/api/battle',
       '/api/recommendations',
       '/api/playlists',
+      '/api/spotify/playlists',
+      '/api/user/top-tracks',
+      '/api/user/top-artists',
+      '/api/user/recently-played',
+      '/api/user/saved-tracks',
+      '/api/user/saved-albums',
+      '/api/profile/taste',
+      '/api/mood/analyze',
+      '/api/mood/playlist',
+      '/api/personality/listening',
+      '/api/playlists/optimize',
+      '/api/playlists/generate',
+      '/api/discovery/timeline',
     ];
     return spotifyEndpoints.any((endpoint) => path.contains(endpoint));
+  }
+
+  Future<List<Map<String, dynamic>>> getRecommendationStrategies() async {
+    try {
+      final response = await _dio.get('/api/recommendations/strategies');
+      if (response.data == null) {
+        return [];
+      }
+      if (response.data is! List) {
+        return [];
+      }
+      return (response.data as List).map((json) {
+        if (json is Map) {
+          return Map<String, dynamic>.from(json);
+        }
+        return <String, dynamic>{};
+      }).toList();
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<void> saveLikedTrack({
+    required String trackId,
+    required String trackName,
+    required String artistName,
+    String? albumArtUrl,
+    String? previewUrl,
+  }) async {
+    try {
+      final requestData = {
+        'track_id': trackId,
+        'track_name': trackName,
+        'artist_name': artistName,
+        if (albumArtUrl != null) 'album_art_url': albumArtUrl,
+        if (previewUrl != null) 'preview_url': previewUrl,
+      };
+
+      await _dio.post('/api/liked-tracks', data: requestData);
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<void> deleteLikedTrack(String id) async {
+    try {
+      await _dio.delete('/api/liked-tracks/$id');
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getLikedTracks() async {
+    try {
+      final response = await _dio.get('/api/liked-tracks');
+      if (response.data == null) {
+        return [];
+      }
+      if (response.data is! List) {
+        return [];
+      }
+      return (response.data as List).map((json) {
+        if (json is Map) {
+          return Map<String, dynamic>.from(json);
+        }
+        return <String, dynamic>{};
+      }).toList();
+    } on DioException catch (e) {
+      throw _handleError(e);
+    }
   }
 
   ApiException _handleError(DioException error) {
@@ -330,13 +630,17 @@ class ApiClient {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
-        return ApiException(message: 'Connection timeout. Please check your internet connection.', statusCode: 408);
+        return ApiException(
+            message:
+                'Connection timeout. Please check your internet connection.',
+            statusCode: 408);
       case DioExceptionType.badResponse:
         final statusCode = error.response?.statusCode;
-        final message = error.response?.data?['message'] ?? 
-                       error.response?.data?['error'] ?? 
-                       'Unknown error occurred';
-        return ApiException(message: message.toString(), statusCode: statusCode);
+        final message = error.response?.data?['message'] ??
+            error.response?.data?['error'] ??
+            'Unknown error occurred';
+        return ApiException(
+            message: message.toString(), statusCode: statusCode);
       case DioExceptionType.cancel:
         return ApiException(message: 'Request cancelled', statusCode: 0);
       case DioExceptionType.unknown:
@@ -348,4 +652,3 @@ class ApiClient {
     }
   }
 }
-

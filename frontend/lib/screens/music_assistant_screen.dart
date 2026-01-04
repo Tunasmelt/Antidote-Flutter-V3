@@ -9,7 +9,7 @@ class RecommendationStrategy {
   final String description;
   final IconData icon;
   final Color color;
-  
+
   RecommendationStrategy({
     required this.id,
     required this.title,
@@ -26,22 +26,21 @@ class MusicAssistantScreen extends StatefulWidget {
   State<MusicAssistantScreen> createState() => _MusicAssistantScreenState();
 }
 
-class _MusicAssistantScreenState extends State<MusicAssistantScreen> 
+class _MusicAssistantScreenState extends State<MusicAssistantScreen>
     with TickerProviderStateMixin {
-      
   late AnimationController _staggerController;
   final List<AnimationController> _cardControllers = [];
-  
+
   final List<RecommendationStrategy> _strategies = [
     RecommendationStrategy(
-      id: 'best_next_track',
+      id: 'best_next',
       title: 'Best Next Track',
       description: 'AI picks perfect next song',
       icon: Icons.lightbulb,
       color: AppTheme.warning,
     ),
     RecommendationStrategy(
-      id: 'mood_safe_pick',
+      id: 'mood_safe',
       title: 'Mood-Safe Pick',
       description: 'Maintains current vibe',
       icon: Icons.favorite,
@@ -55,7 +54,7 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
       color: AppTheme.secondary,
     ),
     RecommendationStrategy(
-      id: 'return_to_familiar',
+      id: 'return_familiar',
       title: 'Return To Familiar',
       description: 'Deep cuts from loved artists',
       icon: Icons.refresh,
@@ -69,14 +68,49 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
       color: AppTheme.success,
     ),
     RecommendationStrategy(
-      id: 'energy_adjustment',
+      id: 'energy_adjust',
       title: 'Energy Adjustment',
       description: 'Shift energy up or down',
       icon: Icons.bolt,
       color: AppTheme.accent,
     ),
+    RecommendationStrategy(
+      id: 'professional_discovery',
+      title: 'Professional Discovery',
+      description: 'Multi-source AI analysis',
+      icon: Icons.auto_awesome,
+      color: Colors.purple,
+    ),
+    RecommendationStrategy(
+      id: 'taste_expansion',
+      title: 'Taste Expansion',
+      description: 'Bridge to new genres',
+      icon: Icons.explore_outlined,
+      color: Colors.teal,
+    ),
+    RecommendationStrategy(
+      id: 'deep_cuts',
+      title: 'Deep Cuts',
+      description: 'Hidden gems from favorites',
+      icon: Icons.diamond,
+      color: Colors.cyan,
+    ),
+    RecommendationStrategy(
+      id: 'continue_session',
+      title: 'Continue Session',
+      description: 'Based on recent listening',
+      icon: Icons.play_circle,
+      color: Colors.orange,
+    ),
+    RecommendationStrategy(
+      id: 'from_library',
+      title: 'From Your Library',
+      description: 'Deep cuts from saved tracks',
+      icon: Icons.library_music,
+      color: Colors.indigo,
+    ),
   ];
-  
+
   @override
   void initState() {
     super.initState();
@@ -84,7 +118,7 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
       duration: const Duration(milliseconds: 1000),
       vsync: this,
     );
-    
+
     // Initialize card controllers
     for (int i = 0; i < _strategies.length; i++) {
       _cardControllers.add(AnimationController(
@@ -92,7 +126,7 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
         vsync: this,
       ));
     }
-    
+
     // Start staggered animation
     _staggerController.forward().then((_) {
       for (int i = 0; i < _cardControllers.length; i++) {
@@ -102,7 +136,7 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
       }
     });
   }
-  
+
   @override
   void dispose() {
     _staggerController.dispose();
@@ -115,7 +149,10 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
-      padding: const EdgeInsets.only(bottom: 120),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).padding.bottom +
+            80, // Bottom nav + safe area
+      ),
       child: Column(
         children: [
           // Header
@@ -138,16 +175,17 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
                     const SizedBox(width: 16),
                     Text(
                       'Music Decision Assistant',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: AppTheme.textPrimary,
-                        fontWeight: FontWeight.w600,
-                      ),
+                      style:
+                          Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                color: AppTheme.textPrimary,
+                                fontWeight: FontWeight.w600,
+                              ),
                     ),
                   ],
                 ),
-                
+
                 const SizedBox(height: 32),
-                
+
                 // Auth Notice
                 Container(
                   padding: const EdgeInsets.all(16),
@@ -172,18 +210,24 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
                           children: [
                             Text(
                               'PRO TIP',
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: AppTheme.secondary,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 1.5,
-                              ),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: AppTheme.secondary,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: 1.5,
+                                  ),
                             ),
                             const SizedBox(height: 4),
                             Text(
                               'Sign up to unlock personalized flavor profiles and smarter recommendations across all playlists.',
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: AppTheme.textMuted,
-                              ),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: AppTheme.textMuted,
+                                  ),
                             ),
                           ],
                         ),
@@ -194,7 +238,7 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
               ],
             ),
           ),
-          
+
           // Strategy Grid
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -214,7 +258,7 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
                   builder: (context, child) {
                     final scale = 0.8 + (0.2 * _cardControllers[index].value);
                     final opacity = _cardControllers[index].value;
-                    
+
                     return Transform.scale(
                       scale: scale,
                       child: Opacity(
@@ -231,9 +275,9 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
               },
             ),
           ),
-          
+
           const SizedBox(height: 32),
-          
+
           // CTA Buttons
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -257,9 +301,7 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
                     child: const Text('Sign Up for More'),
                   ),
                 ),
-                
                 const SizedBox(height: 12),
-                
                 SizedBox(
                   width: double.infinity,
                   height: 48,
@@ -268,7 +310,8 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
                       // Continue as guest
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Continuing as guest with limited features'),
+                          content:
+                              Text('Continuing as guest with limited features'),
                           backgroundColor: AppTheme.cardBackground,
                         ),
                       );
@@ -292,16 +335,16 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
               ],
             ),
           ),
-          
+
           const SizedBox(height: 40),
         ],
       ),
     );
   }
-  
+
   Widget _buildStrategyCard(
-    BuildContext context, 
-    RecommendationStrategy strategy, 
+    BuildContext context,
+    RecommendationStrategy strategy,
     int index,
   ) {
     return InkWell(
@@ -341,17 +384,17 @@ class _MusicAssistantScreenState extends State<MusicAssistantScreen>
             Text(
               strategy.title,
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: AppTheme.textPrimary,
-                fontWeight: FontWeight.w600,
-              ),
+                    color: AppTheme.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 4),
             Text(
               strategy.description,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppTheme.textMuted,
-              ),
+                    color: AppTheme.textMuted,
+                  ),
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,

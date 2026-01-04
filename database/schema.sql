@@ -175,6 +175,45 @@ CREATE TABLE IF NOT EXISTS public.recommendations (
 );
 
 -- ============================================================================
+-- LIKED TRACKS TABLE
+-- ============================================================================
+-- Stores user's liked tracks from recommendations/discovery
+CREATE TABLE IF NOT EXISTS public.liked_tracks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
+  track_id TEXT NOT NULL, -- Internal track ID
+  track_name TEXT NOT NULL,
+  artist_name TEXT NOT NULL,
+  album_art_url TEXT,
+  preview_url TEXT,
+  spotify_id TEXT, -- Spotify track ID
+  liked_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  
+  -- Ensure unique liked tracks per user (same track can't be liked twice)
+  CONSTRAINT unique_user_liked_track UNIQUE (user_id, spotify_id)
+);
+
+-- ============================================================================
+-- TASTE PROFILES TABLE
+-- ============================================================================
+-- Stores computed user taste profiles aggregated from analyses
+CREATE TABLE IF NOT EXISTS public.taste_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES public.users(id) ON DELETE CASCADE UNIQUE,
+  
+  -- Aggregated taste data
+  top_genres JSONB, -- Map of genre -> percentage (e.g., {"Pop": 45.5, "Rock": 30.2})
+  top_artists JSONB, -- Map of artist -> percentage (e.g., {"Artist Name": 15.3})
+  audio_features JSONB, -- Map of feature -> average value (e.g., {"energy": 0.75, "danceability": 0.68})
+  
+  -- Metadata
+  total_playlists_analyzed INTEGER DEFAULT 0,
+  last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================================================
 -- HISTORY TABLE (VIEW)
 -- ============================================================================
 -- Combined view of analyses and battles for history screen
@@ -193,7 +232,7 @@ SELECT
   NULL::TEXT as winner,
   NULL::INTEGER as compatibility_score
 FROM public.analyses a
-JOIN public.playlists p ON a.playlist_id = p.id
+JOIN public.playlists p ON a.playlist_id::UUID = p.id::UUID
 
 UNION ALL
 
@@ -225,14 +264,18 @@ SELECT
   COUNT(DISTINCT a.id) as analyses_count,
   COUNT(DISTINCT b.id) as battles_count,
   COUNT(DISTINCT p.id) as saved_playlists_count,
+  COUNT(DISTINCT lt.id) as liked_tracks_count,
   COALESCE(AVG(a.overall_rating), 0) as average_rating,
   COALESCE(AVG(a.health_score), 0) as average_health_score,
   MAX(a.created_at) as last_analysis_at,
-  MAX(b.created_at) as last_battle_at
+  MAX(b.created_at) as last_battle_at,
+  MAX(tp.last_updated) as taste_profile_last_updated
 FROM public.users u
 LEFT JOIN public.analyses a ON u.id = a.user_id
 LEFT JOIN public.battles b ON u.id = b.user_id
 LEFT JOIN public.playlists p ON u.id = p.user_id
+LEFT JOIN public.liked_tracks lt ON u.id = lt.user_id
+LEFT JOIN public.taste_profiles tp ON u.id = tp.user_id
 GROUP BY u.id;
 
 -- ============================================================================
@@ -244,6 +287,8 @@ COMMENT ON TABLE public.tracks IS 'Individual tracks with audio features';
 COMMENT ON TABLE public.analyses IS 'Playlist analysis results with personality insights';
 COMMENT ON TABLE public.battles IS 'Playlist battle/comparison results';
 COMMENT ON TABLE public.recommendations IS 'AI-powered music recommendations';
+COMMENT ON TABLE public.liked_tracks IS 'User liked tracks from recommendations and discovery';
+COMMENT ON TABLE public.taste_profiles IS 'Computed user taste profiles aggregated from analyses';
 COMMENT ON VIEW public.history IS 'Combined view of analyses and battles for history screen';
 COMMENT ON VIEW public.user_stats IS 'Aggregated user statistics for profile display';
 

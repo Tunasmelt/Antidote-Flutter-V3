@@ -13,13 +13,13 @@ SELECT
   'TABLES CHECK' as check_type,
   COUNT(*) as count,
   CASE 
-    WHEN COUNT(*) = 6 THEN '✓ PASS - All 6 tables exist'
-    ELSE '✗ FAIL - Missing tables (expected 6)'
+    WHEN COUNT(*) = 8 THEN '✓ PASS - All 8 tables exist'
+    ELSE '✗ FAIL - Missing tables (expected 8)'
   END as status
 FROM information_schema.tables 
 WHERE table_schema = 'public' 
   AND table_type = 'BASE TABLE'
-  AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations');
+  AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles');
 
 -- List all tables
 SELECT 
@@ -28,7 +28,7 @@ SELECT
 FROM information_schema.tables 
 WHERE table_schema = 'public' 
   AND table_type = 'BASE TABLE'
-  AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')
+  AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')
 ORDER BY table_name;
 
 -- ============================================================================
@@ -61,13 +61,13 @@ SELECT
   'RLS CHECK' as check_type,
   COUNT(*) as tables_with_rls,
   CASE 
-    WHEN COUNT(*) = 6 THEN '✓ PASS - RLS enabled on all 6 tables'
+    WHEN COUNT(*) = 8 THEN '✓ PASS - RLS enabled on all 8 tables'
     ELSE '✗ FAIL - RLS not enabled on all tables'
   END as status
 FROM pg_tables 
 WHERE schemaname = 'public' 
   AND rowsecurity = true
-  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations');
+  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles');
 
 -- List RLS status for each table
 SELECT 
@@ -78,7 +78,7 @@ SELECT
   END as rls_status
 FROM pg_tables 
 WHERE schemaname = 'public' 
-  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')
+  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')
 ORDER BY tablename;
 
 -- Check RLS on Supabase internal source tables (if they exist)
@@ -122,11 +122,13 @@ SELECT
     WHEN tablename = 'analyses' AND COUNT(*) >= 4 THEN '✓ PASS'
     WHEN tablename = 'battles' AND COUNT(*) >= 4 THEN '✓ PASS'
     WHEN tablename = 'recommendations' AND COUNT(*) >= 4 THEN '✓ PASS'
+    WHEN tablename = 'liked_tracks' AND COUNT(*) >= 4 THEN '✓ PASS'
+    WHEN tablename = 'taste_profiles' AND COUNT(*) >= 4 THEN '✓ PASS'
     ELSE '✗ FAIL - Missing policies'
   END as status
 FROM pg_policies 
 WHERE schemaname = 'public'
-  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')
+  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')
 GROUP BY schemaname, tablename
 ORDER BY tablename;
 
@@ -135,12 +137,12 @@ SELECT
   'POLICIES CHECK' as check_type,
   COUNT(*) as total_policies,
   CASE 
-    WHEN COUNT(*) >= 24 THEN '✓ PASS - Sufficient policies created'
-    ELSE '✗ FAIL - Missing policies (expected at least 24)'
+    WHEN COUNT(*) >= 32 THEN '✓ PASS - Sufficient policies created'
+    ELSE '✗ FAIL - Missing policies (expected at least 32)'
   END as status
 FROM pg_policies 
 WHERE schemaname = 'public'
-  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations');
+  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles');
 
 -- ============================================================================
 -- 5. VERIFY INDEXES EXIST
@@ -149,12 +151,12 @@ SELECT
   'INDEXES CHECK' as check_type,
   COUNT(*) as index_count,
   CASE 
-    WHEN COUNT(*) >= 20 THEN '✓ PASS - Sufficient indexes created'
+    WHEN COUNT(*) >= 30 THEN '✓ PASS - Sufficient indexes created'
     ELSE '⚠ WARNING - Some indexes may be missing'
   END as status
 FROM pg_indexes 
 WHERE schemaname = 'public'
-  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations');
+  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles');
 
 -- List indexes by table
 SELECT 
@@ -162,7 +164,7 @@ SELECT
   COUNT(*) as index_count
 FROM pg_indexes 
 WHERE schemaname = 'public'
-  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')
+  AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')
 GROUP BY tablename
 ORDER BY tablename;
 
@@ -252,8 +254,8 @@ SELECT
 UNION ALL
 SELECT 
   'Tables: ' || 
-  (SELECT COUNT(*)::text FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')) ||
-  ' / 6' as summary
+  (SELECT COUNT(*)::text FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')) ||
+  ' / 8' as summary
 UNION ALL
 SELECT 
   'Views: ' || 
@@ -262,18 +264,18 @@ SELECT
 UNION ALL
 SELECT 
   'RLS Enabled: ' || 
-  (SELECT COUNT(*)::text FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = true AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')) ||
-  ' / 6' as summary
+  (SELECT COUNT(*)::text FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = true AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')) ||
+  ' / 8' as summary
 UNION ALL
 SELECT 
   'Policies: ' || 
-  (SELECT COUNT(*)::text FROM pg_policies WHERE schemaname = 'public' AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')) ||
-  ' (expected: 24+)' as summary
+  (SELECT COUNT(*)::text FROM pg_policies WHERE schemaname = 'public' AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')) ||
+  ' (expected: 32+)' as summary
 UNION ALL
 SELECT 
   'Indexes: ' || 
-  (SELECT COUNT(*)::text FROM pg_indexes WHERE schemaname = 'public' AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')) ||
-  ' (expected: 20+)' as summary
+  (SELECT COUNT(*)::text FROM pg_indexes WHERE schemaname = 'public' AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')) ||
+  ' (expected: 30+)' as summary
 UNION ALL
 SELECT 
   'Functions: ' || 
@@ -304,10 +306,10 @@ SELECT
 SELECT 
   CASE 
     WHEN 
-      (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')) = 6
+      (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')) = 8
       AND (SELECT COUNT(*) FROM information_schema.views WHERE table_schema = 'public' AND table_name IN ('history', 'user_stats')) = 2
-      AND (SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = true AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')) = 6
-      AND (SELECT COUNT(*) FROM pg_policies WHERE schemaname = 'public' AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations')) >= 24
+      AND (SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = true AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')) = 8
+      AND (SELECT COUNT(*) FROM pg_policies WHERE schemaname = 'public' AND tablename IN ('users', 'playlists', 'tracks', 'analyses', 'battles', 'recommendations', 'liked_tracks', 'taste_profiles')) >= 32
       AND (
         -- Source tables either don't exist OR all have RLS enabled
         (SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE '%_source') = 0

@@ -1,6 +1,18 @@
 import 'package:hive_flutter/hive_flutter.dart';
 import '../config/env_config.dart';
 
+/// Cache service for non-sensitive API response data
+///
+/// SECURITY WARNING: This service uses Hive which stores data unencrypted.
+/// DO NOT use this for storing sensitive data like:
+/// - Authentication tokens (use SecureTokenStorage instead)
+/// - User credentials
+/// - Personal identification information
+///
+/// This cache is intended for:
+/// - API response data (playlists, tracks, analysis results)
+/// - User preferences and settings
+/// - Non-sensitive metadata
 class CacheEntry {
   final String key;
   final dynamic data;
@@ -15,16 +27,16 @@ class CacheEntry {
   bool get isExpired => DateTime.now().isAfter(expiresAt);
 
   Map<String, dynamic> toJson() => {
-    'key': key,
-    'data': data,
-    'expiresAt': expiresAt.toIso8601String(),
-  };
+        'key': key,
+        'data': data,
+        'expiresAt': expiresAt.toIso8601String(),
+      };
 
   factory CacheEntry.fromJson(Map<String, dynamic> json) => CacheEntry(
-    key: json['key'],
-    data: json['data'],
-    expiresAt: DateTime.parse(json['expiresAt']),
-  );
+        key: json['key'],
+        data: json['data'],
+        expiresAt: DateTime.parse(json['expiresAt']),
+      );
 }
 
 class CacheService {
@@ -33,7 +45,7 @@ class CacheService {
 
   static Future<void> init() async {
     if (!EnvConfig.enableOfflineCache) return;
-    
+
     await Hive.initFlutter();
     _cacheBox = await Hive.openBox(_cacheBoxName);
   }
@@ -47,7 +59,7 @@ class CacheService {
       if (entryJson == null) return null;
 
       final entry = CacheEntry.fromJson(Map<String, dynamic>.from(entryJson));
-      
+
       if (entry.isExpired) {
         await delete(key);
         return null;
@@ -60,7 +72,8 @@ class CacheService {
   }
 
   // Set cached data
-  static Future<void> set(String key, dynamic data, {Duration? expiration}) async {
+  static Future<void> set(String key, dynamic data,
+      {Duration? expiration}) async {
     if (!EnvConfig.enableOfflineCache || _cacheBox == null) return;
 
     try {
@@ -95,7 +108,7 @@ class CacheService {
   // Check if key exists and is valid
   static Future<bool> exists(String key) async {
     if (!EnvConfig.enableOfflineCache || _cacheBox == null) return false;
-    
+
     final entryJson = _cacheBox!.get(key);
     if (entryJson == null) return false;
 
@@ -112,11 +125,10 @@ class CacheService {
   }
 
   // Cache API response with automatic key generation
-  static String generateCacheKey(String method, String path, Map<String, dynamic>? params) {
-    final paramsStr = params?.entries
-        .map((e) => '${e.key}=${e.value}')
-        .join('&') ?? '';
+  static String generateCacheKey(
+      String method, String path, Map<String, dynamic>? params) {
+    final paramsStr =
+        params?.entries.map((e) => '${e.key}=${e.value}').join('&') ?? '';
     return '${method}_${path}_$paramsStr';
   }
 }
-

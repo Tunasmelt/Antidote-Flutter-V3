@@ -1,12 +1,14 @@
+import 'dart:async';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:dio/dio.dart';
 import '../config/env_config.dart';
-import 'auth_service.dart';
 
 class SpotifyAuthException implements Exception {
   final String message;
   SpotifyAuthException(this.message);
-  
+
   @override
   String toString() => message;
 }
@@ -15,10 +17,13 @@ class SpotifyAuthService {
   static const String _storageKeyAccessToken = 'spotify_access_token';
   static const String _storageKeyRefreshToken = 'spotify_refresh_token';
   static const String _storageKeyExpiresAt = 'spotify_token_expires_at';
-  
+
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   final SupabaseClient _supabase = Supabase.instance.client;
-  final AuthService _authService = AuthService();
+
+  // Token refresh lock to prevent concurrent refresh attempts
+  bool _isRefreshing = false;
+  Completer<String?>? _refreshCompleter;
 
   // Spotify OAuth scopes needed for the app
   // Note: Scopes are configured in Supabase OAuth settings
@@ -47,7 +52,8 @@ class SpotifyAuthService {
       }
 
       // Option 2: Get from secure storage
-      final storedToken = await _secureStorage.read(key: _storageKeyAccessToken);
+      final storedToken =
+          await _secureStorage.read(key: _storageKeyAccessToken);
       if (storedToken != null && await _isTokenValid(storedToken)) {
         return storedToken;
       }
@@ -104,7 +110,7 @@ class SpotifyAuthService {
 
       final expiresAt = DateTime.parse(expiresAtStr);
       final now = DateTime.now();
-      
+
       // Consider token expired if it expires in less than 5 minutes
       return now.isBefore(expiresAt.subtract(const Duration(minutes: 5)));
     } catch (e) {
@@ -114,10 +120,21 @@ class SpotifyAuthService {
 
   /// Refresh Spotify access token
   Future<String?> refreshSpotifyToken() async {
+    // If already refreshing, wait for the ongoing refresh to complete
+    if (_isRefreshing && _refreshCompleter != null) {
+      return _refreshCompleter!.future;
+    }
+
+    // Start refreshing
+    _isRefreshing = true;
+    _refreshCompleter = Completer<String?>();
+
     try {
-      final refreshToken = await _secureStorage.read(key: _storageKeyRefreshToken);
+      final refreshToken =
+          await _secureStorage.read(key: _storageKeyRefreshToken);
       if (refreshToken == null) {
         // No refresh token, user needs to reconnect
+        _refreshCompleter!.complete(null);
         return null;
       }
 
@@ -128,7 +145,10 @@ class SpotifyAuthService {
           // Supabase handles token refresh automatically
           await _supabase.auth.refreshSession();
           final newToken = await _getTokenFromSupabase();
-          if (newToken != null) return newToken;
+          if (newToken != null) {
+            _refreshCompleter!.complete(newToken);
+            return newToken;
+          }
         } catch (e) {
           // Fall through to manual refresh
         }
@@ -136,23 +156,25 @@ class SpotifyAuthService {
 
       // Manual refresh using Spotify API
       final newToken = await _refreshTokenManually(refreshToken);
+      _refreshCompleter!.complete(newToken);
       return newToken;
     } catch (e) {
+      _refreshCompleter!.complete(null);
       return null;
+    } finally {
+      _isRefreshing = false;
+      _refreshCompleter = null;
     }
   }
 
-  /// Manually refresh token using Spotify API
+  /// Manually refresh token using backend API
   Future<String?> _refreshTokenManually(String refreshToken) async {
     try {
-      final clientId = EnvConfig.spotifyClientId;
-      if (clientId.isEmpty) {
-        throw SpotifyAuthException('Spotify Client ID not configured');
-      }
+      final dio = Dio(BaseOptions(baseUrl: EnvConfig.apiBaseUrl));
 
-      final response = await _supabase.functions.invoke(
-        'refresh-spotify-token',
-        body: {
+      final response = await dio.post(
+        '/api/spotify/refresh',
+        data: {
           'refresh_token': refreshToken,
         },
       );
@@ -160,10 +182,12 @@ class SpotifyAuthService {
       if (response.data != null && response.data['access_token'] != null) {
         final accessToken = response.data['access_token'] as String;
         final expiresIn = response.data['expires_in'] as int? ?? 3600;
-        
+        final newRefreshToken =
+            response.data['refresh_token'] as String? ?? refreshToken;
+
         await _storeTokens(
           accessToken: accessToken,
-          refreshToken: response.data['refresh_token'] as String? ?? refreshToken,
+          refreshToken: newRefreshToken,
           expiresIn: expiresIn,
         );
 
@@ -172,18 +196,105 @@ class SpotifyAuthService {
 
       return null;
     } catch (e) {
-      // If Supabase function doesn't exist, we'll need user to reconnect
+      // If refresh fails, user needs to reconnect
       return null;
     }
   }
 
-  /// Connect Spotify via Supabase OAuth
-  Future<void> connectSpotify() async {
+  /// Connect Spotify via direct OAuth flow
+  Future<void> connectSpotify({bool useDirectOAuth = true}) async {
+    // Always use direct OAuth to avoid circular dependencies
+    await _connectSpotifyDirect();
+  }
+
+  /// Direct Spotify OAuth flow
+  Future<void> _connectSpotifyDirect() async {
     try {
-      await _authService.signInWithSpotify();
-      // After OAuth completes, tokens will be available in Supabase session
+      final dio = Dio(BaseOptions(baseUrl: EnvConfig.apiBaseUrl));
+
+      // Get authorization URL from backend
+      final authResponse = await dio.get(
+        '/api/spotify/authorize',
+        queryParameters: {
+          'redirect_uri': EnvConfig.spotifyRedirectUri,
+        },
+      );
+
+      if (authResponse.data == null || authResponse.data['authUrl'] == null) {
+        throw SpotifyAuthException('Failed to get authorization URL');
+      }
+
+      final authUrl = authResponse.data['authUrl'] as String;
+
+      // Open authorization URL in browser
+      final uri = Uri.parse(authUrl);
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        throw SpotifyAuthException('Failed to open authorization URL');
+      }
+
+      // Wait for callback - this will be handled by deep link handler
+      // The deep link handler will call _handleOAuthCallback
     } catch (e) {
       throw SpotifyAuthException('Failed to connect Spotify: ${e.toString()}');
+    }
+  }
+
+  /// Handle OAuth callback with authorization code
+  /// This is called by the deep link handler when user returns from Spotify
+  /// Returns both tokens and user info
+  Future<Map<String, dynamic>> handleOAuthCallback(String code,
+      {String? redirectUri}) async {
+    try {
+      final dio = Dio(BaseOptions(baseUrl: EnvConfig.apiBaseUrl));
+
+      // Exchange code for tokens
+      final tokenResponse = await dio.post(
+        '/api/spotify/callback',
+        data: {
+          'code': code,
+          'redirect_uri': redirectUri ?? EnvConfig.spotifyRedirectUri,
+        },
+      );
+
+      if (tokenResponse.data == null ||
+          tokenResponse.data['access_token'] == null) {
+        throw SpotifyAuthException('Failed to exchange code for tokens');
+      }
+
+      final accessToken = tokenResponse.data['access_token'] as String;
+      final refreshToken = tokenResponse.data['refresh_token'] as String?;
+      final expiresIn = tokenResponse.data['expires_in'] as int? ?? 3600;
+
+      // Store tokens securely
+      await _storeTokens(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        expiresIn: expiresIn,
+      );
+
+      // Fetch Spotify user info using the access token
+      final userResponse = await dio.get(
+        '/api/spotify/me',
+        options: Options(
+          headers: {
+            'X-Spotify-Token': accessToken,
+          },
+        ),
+      );
+
+      if (userResponse.data == null) {
+        throw SpotifyAuthException('Failed to fetch Spotify user info');
+      }
+
+      // Return both tokens and user info
+      return {
+        'access_token': accessToken,
+        'refresh_token': refreshToken,
+        'expires_in': expiresIn,
+        'user': userResponse.data,
+      };
+    } catch (e) {
+      throw SpotifyAuthException('Failed to complete OAuth: ${e.toString()}');
     }
   }
 
@@ -194,10 +305,12 @@ class SpotifyAuthService {
     required int expiresIn,
   }) async {
     try {
-      await _secureStorage.write(key: _storageKeyAccessToken, value: accessToken);
-      
+      await _secureStorage.write(
+          key: _storageKeyAccessToken, value: accessToken);
+
       if (refreshToken != null) {
-        await _secureStorage.write(key: _storageKeyRefreshToken, value: refreshToken);
+        await _secureStorage.write(
+            key: _storageKeyRefreshToken, value: refreshToken);
       }
 
       final expiresAt = DateTime.now().add(Duration(seconds: expiresIn));
@@ -221,18 +334,62 @@ class SpotifyAuthService {
     }
   }
 
-  /// Get Spotify user info (optional - for verification)
+  /// Get Spotify user info using current access token
   Future<Map<String, dynamic>?> getSpotifyUserInfo() async {
     try {
       final token = await getSpotifyAccessToken();
       if (token == null) return null;
 
-      // This would require a backend endpoint or direct Spotify API call
-      // For now, return null - can be implemented later if needed
-      return null;
+      final dio = Dio(BaseOptions(baseUrl: EnvConfig.apiBaseUrl));
+      final response = await dio.get(
+        '/api/spotify/me',
+        options: Options(
+          headers: {
+            'X-Spotify-Token': token,
+          },
+        ),
+      );
+
+      return response.data as Map<String, dynamic>?;
     } catch (e) {
       return null;
     }
   }
-}
 
+  /// Validate and restore tokens from secure storage
+  /// Returns valid token if available, null if tokens need to be refreshed or re-authenticated
+  Future<String?> validateAndRestoreTokens() async {
+    try {
+      // Check if tokens exist in secure storage
+      final accessToken =
+          await _secureStorage.read(key: _storageKeyAccessToken);
+      final refreshToken =
+          await _secureStorage.read(key: _storageKeyRefreshToken);
+
+      if (accessToken == null) {
+        // No tokens stored
+        return null;
+      }
+
+      // Check if token is valid (not expired)
+      if (await _isTokenValid(accessToken)) {
+        // Token is valid, return it
+        return accessToken;
+      }
+
+      // Token expired, try to refresh
+      if (refreshToken != null) {
+        final newToken = await refreshSpotifyToken();
+        if (newToken != null) {
+          return newToken;
+        }
+      }
+
+      // Refresh failed or no refresh token, user needs to reconnect
+      return null;
+    } catch (e) {
+      // Error validating tokens, user needs to reconnect
+      return null;
+    }
+  }
+}

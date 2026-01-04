@@ -20,30 +20,66 @@
 -- ============================================================================
 -- Drop policies in reverse dependency order
 -- Note: View policies are not created (see VIEW POLICIES section below for explanation)
-DROP POLICY IF EXISTS "Users can delete own recommendations" ON public.recommendations;
-DROP POLICY IF EXISTS "Users can update own recommendations" ON public.recommendations;
-DROP POLICY IF EXISTS "Users can create own recommendations" ON public.recommendations;
-DROP POLICY IF EXISTS "Users can view own recommendations" ON public.recommendations;
-DROP POLICY IF EXISTS "Users can delete own battles" ON public.battles;
-DROP POLICY IF EXISTS "Users can update own battles" ON public.battles;
-DROP POLICY IF EXISTS "Users can create own battles" ON public.battles;
-DROP POLICY IF EXISTS "Users can view own battles" ON public.battles;
-DROP POLICY IF EXISTS "Users can delete own analyses" ON public.analyses;
-DROP POLICY IF EXISTS "Users can update own analyses" ON public.analyses;
-DROP POLICY IF EXISTS "Users can create own analyses" ON public.analyses;
-DROP POLICY IF EXISTS "Users can view own analyses" ON public.analyses;
-DROP POLICY IF EXISTS "Users can delete tracks from own playlists" ON public.tracks;
-DROP POLICY IF EXISTS "Users can update tracks in own playlists" ON public.tracks;
-DROP POLICY IF EXISTS "Users can insert tracks to own playlists" ON public.tracks;
-DROP POLICY IF EXISTS "Users can view tracks from own playlists" ON public.tracks;
-DROP POLICY IF EXISTS "Users can delete own playlists" ON public.playlists;
-DROP POLICY IF EXISTS "Users can update own playlists" ON public.playlists;
-DROP POLICY IF EXISTS "Users can create own playlists" ON public.playlists;
-DROP POLICY IF EXISTS "Users can view own playlists" ON public.playlists;
-DROP POLICY IF EXISTS "Users can delete own profile" ON public.users;
-DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
-DROP POLICY IF EXISTS "Users can insert own profile" ON public.users;
-DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
+-- Drop policies for all tables (only if tables exist)
+DO $$
+BEGIN
+  -- Taste profiles
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'taste_profiles') THEN
+    DROP POLICY IF EXISTS "Users can delete own taste profiles" ON public.taste_profiles;
+    DROP POLICY IF EXISTS "Users can update own taste profiles" ON public.taste_profiles;
+    DROP POLICY IF EXISTS "Users can create own taste profiles" ON public.taste_profiles;
+    DROP POLICY IF EXISTS "Users can view own taste profiles" ON public.taste_profiles;
+  END IF;
+  -- Liked tracks
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'liked_tracks') THEN
+    DROP POLICY IF EXISTS "Users can delete own liked tracks" ON public.liked_tracks;
+    DROP POLICY IF EXISTS "Users can update own liked tracks" ON public.liked_tracks;
+    DROP POLICY IF EXISTS "Users can create own liked tracks" ON public.liked_tracks;
+    DROP POLICY IF EXISTS "Users can view own liked tracks" ON public.liked_tracks;
+  END IF;
+  -- Recommendations
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'recommendations') THEN
+    DROP POLICY IF EXISTS "Users can delete own recommendations" ON public.recommendations;
+    DROP POLICY IF EXISTS "Users can update own recommendations" ON public.recommendations;
+    DROP POLICY IF EXISTS "Users can create own recommendations" ON public.recommendations;
+    DROP POLICY IF EXISTS "Users can view own recommendations" ON public.recommendations;
+  END IF;
+  -- Battles
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'battles') THEN
+    DROP POLICY IF EXISTS "Users can delete own battles" ON public.battles;
+    DROP POLICY IF EXISTS "Users can update own battles" ON public.battles;
+    DROP POLICY IF EXISTS "Users can create own battles" ON public.battles;
+    DROP POLICY IF EXISTS "Users can view own battles" ON public.battles;
+  END IF;
+  -- Analyses
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'analyses') THEN
+    DROP POLICY IF EXISTS "Users can delete own analyses" ON public.analyses;
+    DROP POLICY IF EXISTS "Users can update own analyses" ON public.analyses;
+    DROP POLICY IF EXISTS "Users can create own analyses" ON public.analyses;
+    DROP POLICY IF EXISTS "Users can view own analyses" ON public.analyses;
+  END IF;
+  -- Tracks
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'tracks') THEN
+    DROP POLICY IF EXISTS "Users can delete tracks from own playlists" ON public.tracks;
+    DROP POLICY IF EXISTS "Users can update tracks in own playlists" ON public.tracks;
+    DROP POLICY IF EXISTS "Users can insert tracks to own playlists" ON public.tracks;
+    DROP POLICY IF EXISTS "Users can view tracks from own playlists" ON public.tracks;
+  END IF;
+  -- Playlists
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'playlists') THEN
+    DROP POLICY IF EXISTS "Users can delete own playlists" ON public.playlists;
+    DROP POLICY IF EXISTS "Users can update own playlists" ON public.playlists;
+    DROP POLICY IF EXISTS "Users can create own playlists" ON public.playlists;
+    DROP POLICY IF EXISTS "Users can view own playlists" ON public.playlists;
+  END IF;
+  -- Users
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') THEN
+    DROP POLICY IF EXISTS "Users can delete own profile" ON public.users;
+    DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
+    DROP POLICY IF EXISTS "Users can insert own profile" ON public.users;
+    DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- ENABLE ROW LEVEL SECURITY
@@ -51,12 +87,34 @@ DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
 -- Note: Tables should be created first (via schema.sql), so these are safe
 -- IMPORTANT: RLS can ONLY be enabled on TABLES, not on VIEWS
 -- Views inherit security from their underlying tables and don't need RLS enabled
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.playlists ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.tracks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.analyses ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.battles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.recommendations ENABLE ROW LEVEL SECURITY;
+-- Enable RLS on all tables (only if tables exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') THEN
+    ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'playlists') THEN
+    ALTER TABLE public.playlists ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'tracks') THEN
+    ALTER TABLE public.tracks ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'analyses') THEN
+    ALTER TABLE public.analyses ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'battles') THEN
+    ALTER TABLE public.battles ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'recommendations') THEN
+    ALTER TABLE public.recommendations ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'liked_tracks') THEN
+    ALTER TABLE public.liked_tracks ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'taste_profiles') THEN
+    ALTER TABLE public.taste_profiles ENABLE ROW LEVEL SECURITY;
+  END IF;
+END $$;
 
 -- Note: Views (history, user_stats) do NOT need RLS enabled
 -- Policies can be created directly on views without enabling RLS first
@@ -65,181 +123,287 @@ ALTER TABLE public.recommendations ENABLE ROW LEVEL SECURITY;
 -- USERS TABLE POLICIES
 -- ============================================================================
 
--- Users can view their own profile
-CREATE POLICY "Users can view own profile"
-  ON public.users FOR SELECT
-  USING (auth.uid() = id);
-
--- Users can insert their own profile (on signup)
-CREATE POLICY "Users can insert own profile"
-  ON public.users FOR INSERT
-  WITH CHECK (auth.uid() = id);
-
--- Users can update their own profile
-CREATE POLICY "Users can update own profile"
-  ON public.users FOR UPDATE
-  USING (auth.uid() = id)
-  WITH CHECK (auth.uid() = id);
-
--- Users can delete their own profile
-CREATE POLICY "Users can delete own profile"
-  ON public.users FOR DELETE
-  USING (auth.uid() = id);
+-- Users policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'users' AND policyname = 'Users can view own profile') THEN
+      CREATE POLICY "Users can view own profile"
+        ON public.users FOR SELECT
+        USING (auth.uid() = id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'users' AND policyname = 'Users can insert own profile') THEN
+      CREATE POLICY "Users can insert own profile"
+        ON public.users FOR INSERT
+        WITH CHECK (auth.uid() = id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'users' AND policyname = 'Users can update own profile') THEN
+      CREATE POLICY "Users can update own profile"
+        ON public.users FOR UPDATE
+        USING (auth.uid() = id)
+        WITH CHECK (auth.uid() = id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'users' AND policyname = 'Users can delete own profile') THEN
+      CREATE POLICY "Users can delete own profile"
+        ON public.users FOR DELETE
+        USING (auth.uid() = id);
+    END IF;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- PLAYLISTS TABLE POLICIES
 -- ============================================================================
 
--- Users can view their own playlists
-CREATE POLICY "Users can view own playlists"
-  ON public.playlists FOR SELECT
-  USING (auth.uid() = user_id);
-
--- Users can create their own playlists
-CREATE POLICY "Users can create own playlists"
-  ON public.playlists FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
--- Users can update their own playlists
-CREATE POLICY "Users can update own playlists"
-  ON public.playlists FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- Users can delete their own playlists
-CREATE POLICY "Users can delete own playlists"
-  ON public.playlists FOR DELETE
-  USING (auth.uid() = user_id);
+-- Playlists policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'playlists') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'playlists' AND policyname = 'Users can view own playlists') THEN
+      CREATE POLICY "Users can view own playlists"
+        ON public.playlists FOR SELECT
+        USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'playlists' AND policyname = 'Users can create own playlists') THEN
+      CREATE POLICY "Users can create own playlists"
+        ON public.playlists FOR INSERT
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'playlists' AND policyname = 'Users can update own playlists') THEN
+      CREATE POLICY "Users can update own playlists"
+        ON public.playlists FOR UPDATE
+        USING (auth.uid() = user_id)
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'playlists' AND policyname = 'Users can delete own playlists') THEN
+      CREATE POLICY "Users can delete own playlists"
+        ON public.playlists FOR DELETE
+        USING (auth.uid() = user_id);
+    END IF;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- TRACKS TABLE POLICIES
 -- ============================================================================
 
--- Users can view tracks from their own playlists
-CREATE POLICY "Users can view tracks from own playlists"
-  ON public.tracks FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.playlists p
-      WHERE p.id = tracks.playlist_id
-      AND p.user_id = auth.uid()
-    )
-  );
-
--- Users can insert tracks to their own playlists
-CREATE POLICY "Users can insert tracks to own playlists"
-  ON public.tracks FOR INSERT
-  WITH CHECK (
-    EXISTS (
-      SELECT 1 FROM public.playlists p
-      WHERE p.id = tracks.playlist_id
-      AND p.user_id = auth.uid()
-    )
-  );
-
--- Users can update tracks in their own playlists
-CREATE POLICY "Users can update tracks in own playlists"
-  ON public.tracks FOR UPDATE
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.playlists p
-      WHERE p.id = tracks.playlist_id
-      AND p.user_id = auth.uid()
-    )
-  )
-  WITH CHECK (
-    EXISTS (
-      SELECT 1 FROM public.playlists p
-      WHERE p.id = tracks.playlist_id
-      AND p.user_id = auth.uid()
-    )
-  );
-
--- Users can delete tracks from their own playlists
-CREATE POLICY "Users can delete tracks from own playlists"
-  ON public.tracks FOR DELETE
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.playlists p
-      WHERE p.id = tracks.playlist_id
-      AND p.user_id = auth.uid()
-    )
-  );
+-- Tracks policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'tracks') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'tracks' AND policyname = 'Users can view tracks from own playlists') THEN
+      CREATE POLICY "Users can view tracks from own playlists"
+        ON public.tracks FOR SELECT
+        USING (
+          EXISTS (
+            SELECT 1 FROM public.playlists p
+            WHERE p.id = tracks.playlist_id
+            AND p.user_id = auth.uid()
+          )
+        );
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'tracks' AND policyname = 'Users can insert tracks to own playlists') THEN
+      CREATE POLICY "Users can insert tracks to own playlists"
+        ON public.tracks FOR INSERT
+        WITH CHECK (
+          EXISTS (
+            SELECT 1 FROM public.playlists p
+            WHERE p.id = tracks.playlist_id
+            AND p.user_id = auth.uid()
+          )
+        );
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'tracks' AND policyname = 'Users can update tracks in own playlists') THEN
+      CREATE POLICY "Users can update tracks in own playlists"
+        ON public.tracks FOR UPDATE
+        USING (
+          EXISTS (
+            SELECT 1 FROM public.playlists p
+            WHERE p.id = tracks.playlist_id
+            AND p.user_id = auth.uid()
+          )
+        )
+        WITH CHECK (
+          EXISTS (
+            SELECT 1 FROM public.playlists p
+            WHERE p.id = tracks.playlist_id
+            AND p.user_id = auth.uid()
+          )
+        );
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'tracks' AND policyname = 'Users can delete tracks from own playlists') THEN
+      CREATE POLICY "Users can delete tracks from own playlists"
+        ON public.tracks FOR DELETE
+        USING (
+          EXISTS (
+            SELECT 1 FROM public.playlists p
+            WHERE p.id = tracks.playlist_id
+            AND p.user_id = auth.uid()
+          )
+        );
+    END IF;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- ANALYSES TABLE POLICIES
 -- ============================================================================
 
--- Users can view their own analyses
-CREATE POLICY "Users can view own analyses"
-  ON public.analyses FOR SELECT
-  USING (auth.uid() = user_id);
-
--- Users can create their own analyses
-CREATE POLICY "Users can create own analyses"
-  ON public.analyses FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
--- Users can update their own analyses
-CREATE POLICY "Users can update own analyses"
-  ON public.analyses FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- Users can delete their own analyses
-CREATE POLICY "Users can delete own analyses"
-  ON public.analyses FOR DELETE
-  USING (auth.uid() = user_id);
+-- Analyses policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'analyses') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'analyses' AND policyname = 'Users can view own analyses') THEN
+      CREATE POLICY "Users can view own analyses"
+        ON public.analyses FOR SELECT
+        USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'analyses' AND policyname = 'Users can create own analyses') THEN
+      CREATE POLICY "Users can create own analyses"
+        ON public.analyses FOR INSERT
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'analyses' AND policyname = 'Users can update own analyses') THEN
+      CREATE POLICY "Users can update own analyses"
+        ON public.analyses FOR UPDATE
+        USING (auth.uid() = user_id)
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'analyses' AND policyname = 'Users can delete own analyses') THEN
+      CREATE POLICY "Users can delete own analyses"
+        ON public.analyses FOR DELETE
+        USING (auth.uid() = user_id);
+    END IF;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- BATTLES TABLE POLICIES
 -- ============================================================================
 
--- Users can view their own battles
-CREATE POLICY "Users can view own battles"
-  ON public.battles FOR SELECT
-  USING (auth.uid() = user_id);
-
--- Users can create their own battles
-CREATE POLICY "Users can create own battles"
-  ON public.battles FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
--- Users can update their own battles
-CREATE POLICY "Users can update own battles"
-  ON public.battles FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- Users can delete their own battles
-CREATE POLICY "Users can delete own battles"
-  ON public.battles FOR DELETE
-  USING (auth.uid() = user_id);
+-- Battles policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'battles') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'battles' AND policyname = 'Users can view own battles') THEN
+      CREATE POLICY "Users can view own battles"
+        ON public.battles FOR SELECT
+        USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'battles' AND policyname = 'Users can create own battles') THEN
+      CREATE POLICY "Users can create own battles"
+        ON public.battles FOR INSERT
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'battles' AND policyname = 'Users can update own battles') THEN
+      CREATE POLICY "Users can update own battles"
+        ON public.battles FOR UPDATE
+        USING (auth.uid() = user_id)
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'battles' AND policyname = 'Users can delete own battles') THEN
+      CREATE POLICY "Users can delete own battles"
+        ON public.battles FOR DELETE
+        USING (auth.uid() = user_id);
+    END IF;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- RECOMMENDATIONS TABLE POLICIES
 -- ============================================================================
 
--- Users can view their own recommendations
-CREATE POLICY "Users can view own recommendations"
-  ON public.recommendations FOR SELECT
-  USING (auth.uid() = user_id);
+-- Recommendations policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'recommendations') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'recommendations' AND policyname = 'Users can view own recommendations') THEN
+      CREATE POLICY "Users can view own recommendations"
+        ON public.recommendations FOR SELECT
+        USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'recommendations' AND policyname = 'Users can create own recommendations') THEN
+      CREATE POLICY "Users can create own recommendations"
+        ON public.recommendations FOR INSERT
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'recommendations' AND policyname = 'Users can update own recommendations') THEN
+      CREATE POLICY "Users can update own recommendations"
+        ON public.recommendations FOR UPDATE
+        USING (auth.uid() = user_id)
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'recommendations' AND policyname = 'Users can delete own recommendations') THEN
+      CREATE POLICY "Users can delete own recommendations"
+        ON public.recommendations FOR DELETE
+        USING (auth.uid() = user_id);
+    END IF;
+  END IF;
+END $$;
 
--- Users can create their own recommendations
-CREATE POLICY "Users can create own recommendations"
-  ON public.recommendations FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
+-- ============================================================================
+-- LIKED TRACKS TABLE POLICIES
+-- ============================================================================
 
--- Users can update their own recommendations
-CREATE POLICY "Users can update own recommendations"
-  ON public.recommendations FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
+-- Liked tracks policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'liked_tracks') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'liked_tracks' AND policyname = 'Users can view own liked tracks') THEN
+      CREATE POLICY "Users can view own liked tracks"
+        ON public.liked_tracks FOR SELECT
+        USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'liked_tracks' AND policyname = 'Users can create own liked tracks') THEN
+      CREATE POLICY "Users can create own liked tracks"
+        ON public.liked_tracks FOR INSERT
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'liked_tracks' AND policyname = 'Users can update own liked tracks') THEN
+      CREATE POLICY "Users can update own liked tracks"
+        ON public.liked_tracks FOR UPDATE
+        USING (auth.uid() = user_id)
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'liked_tracks' AND policyname = 'Users can delete own liked tracks') THEN
+      CREATE POLICY "Users can delete own liked tracks"
+        ON public.liked_tracks FOR DELETE
+        USING (auth.uid() = user_id);
+    END IF;
+  END IF;
+END $$;
 
--- Users can delete their own recommendations
-CREATE POLICY "Users can delete own recommendations"
-  ON public.recommendations FOR DELETE
-  USING (auth.uid() = user_id);
+-- ============================================================================
+-- TASTE PROFILES TABLE POLICIES
+-- ============================================================================
+
+-- Taste profiles policies (only create if table exists and policies don't exist)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'taste_profiles') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'taste_profiles' AND policyname = 'Users can view own taste profiles') THEN
+      CREATE POLICY "Users can view own taste profiles"
+        ON public.taste_profiles FOR SELECT
+        USING (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'taste_profiles' AND policyname = 'Users can create own taste profiles') THEN
+      CREATE POLICY "Users can create own taste profiles"
+        ON public.taste_profiles FOR INSERT
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'taste_profiles' AND policyname = 'Users can update own taste profiles') THEN
+      CREATE POLICY "Users can update own taste profiles"
+        ON public.taste_profiles FOR UPDATE
+        USING (auth.uid() = user_id)
+        WITH CHECK (auth.uid() = user_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'taste_profiles' AND policyname = 'Users can delete own taste profiles') THEN
+      CREATE POLICY "Users can delete own taste profiles"
+        ON public.taste_profiles FOR DELETE
+        USING (auth.uid() = user_id);
+    END IF;
+  END IF;
+END $$;
 
 -- ============================================================================
 -- VIEW POLICIES

@@ -3,6 +3,7 @@ import cors from 'cors';
 import SpotifyWebApi from 'spotify-web-api-node';
 import dotenv from 'dotenv';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { rateLimitUnauthenticated } from './middleware/rateLimiter';
 
 dotenv.config();
 
@@ -229,14 +230,922 @@ function extractSpotifyId(url: string): string | null {
 }
 
 // ============================================================================
+// DATABASE HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Ensure user profile exists in database
+ * Creates or updates user profile when they authenticate
+ */
+async function ensureUserProfile(userId: string, email?: string, displayName?: string): Promise<void> {
+  if (!supabase) {
+    console.warn('Supabase not configured, skipping user profile creation');
+    return;
+  }
+
+  try {
+    // Check if user profile exists
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .single();
+
+    if (!existingUser) {
+      // Create new user profile
+      const { error } = await supabase
+        .from('users')
+        .insert({
+          id: userId,
+          email: email || null,
+          display_name: displayName || null,
+        });
+
+      if (error) {
+        console.error('Error creating user profile:', error);
+      }
+    } else {
+      // Update existing profile if email/name provided
+      if (email || displayName) {
+        const updateData: any = {};
+        if (email) updateData.email = email;
+        if (displayName) updateData.display_name = displayName;
+        updateData.updated_at = new Date().toISOString();
+
+        const { error } = await supabase
+          .from('users')
+          .update(updateData)
+          .eq('id', userId);
+
+        if (error) {
+          console.error('Error updating user profile:', error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error ensuring user profile:', error);
+  }
+}
+
+/**
+ * Save playlist to database
+ * Returns playlist database ID
+ */
+async function savePlaylistToDatabase(
+  userId: string,
+  spotifyId: string,
+  url: string,
+  name: string,
+  owner: string,
+  coverUrl: string | null,
+  trackCount: number,
+  platform: string = 'spotify'
+): Promise<string | null> {
+  if (!supabase) {
+    console.warn('Supabase not configured, skipping playlist save');
+    return null;
+  }
+
+  try {
+    // Check if playlist already exists for this user
+    const { data: existing } = await supabase
+      .from('playlists')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('url', url)
+      .single();
+
+    if (existing) {
+      // Update existing playlist
+      const { error } = await supabase
+        .from('playlists')
+        .update({
+          name,
+          owner,
+          cover_url: coverUrl,
+          track_count: trackCount,
+          analyzed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id);
+
+      if (error) {
+        console.error('Error updating playlist:', error);
+        return null;
+      }
+      return existing.id;
+    } else {
+      // Insert new playlist
+      const { data, error } = await supabase
+        .from('playlists')
+        .insert({
+          user_id: userId,
+          spotify_id: spotifyId,
+          url,
+          name,
+          owner,
+          cover_url: coverUrl,
+          track_count: trackCount,
+          platform,
+          analyzed_at: new Date().toISOString(),
+        })
+        .select('id')
+        .single();
+
+      if (error) {
+        console.error('Error saving playlist:', error);
+        return null;
+      }
+      return data?.id || null;
+    }
+  } catch (error) {
+    console.error('Error saving playlist to database:', error);
+    return null;
+  }
+}
+
+/**
+ * Save tracks to database
+ */
+async function saveTracksToDatabase(
+  playlistId: string,
+  tracks: any[],
+  audioFeaturesMap: Map<string, any>
+): Promise<void> {
+  if (!supabase || !playlistId) {
+    return;
+  }
+
+  try {
+    // Delete existing tracks for this playlist
+    await supabase
+      .from('tracks')
+      .delete()
+      .eq('playlist_id', playlistId);
+
+    // Insert tracks in batches
+    const batchSize = 100;
+    for (let i = 0; i < tracks.length; i += batchSize) {
+      const batch = tracks.slice(i, i + batchSize);
+      const trackInserts = batch.map((track: any) => {
+        const trackId = track.id || track.spotify_id || `track_${Date.now()}_${i}`;
+        const features = audioFeaturesMap.get(trackId) || null;
+        
+        return {
+          id: trackId,
+          playlist_id: playlistId,
+          name: track.name || 'Unknown',
+          artists: track.artists || [],
+          album: track.album || null,
+          album_art_url: track.albumArt || track.album_art_url || null,
+          spotify_id: track.id || track.spotify_id || null,
+          audio_features: features,
+          duration_ms: track.duration_ms || null,
+          popularity: track.popularity || null,
+          genres: track.genres || [],
+        };
+      });
+
+      const { error } = await supabase
+        .from('tracks')
+        .insert(trackInserts);
+
+      if (error) {
+        console.error('Error saving tracks batch:', error);
+      }
+    }
+  } catch (error) {
+    console.error('Error saving tracks to database:', error);
+  }
+}
+
+/**
+ * Save analysis result to database
+ */
+async function saveAnalysisToDatabase(
+  userId: string,
+  playlistId: string,
+  analysisData: {
+    personalityType: string;
+    personalityDescription: string;
+    healthScore: number;
+    healthStatus: string;
+    overallRating: number;
+    ratingDescription: string;
+    audioDna: any;
+    genreDistribution: any[];
+    subgenres: string[];
+    topTracks: any[];
+  }
+): Promise<string | null> {
+  if (!supabase) {
+    console.warn('Supabase not configured, skipping analysis save');
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('analyses')
+      .insert({
+        user_id: userId,
+        playlist_id: playlistId,
+        personality_type: analysisData.personalityType,
+        personality_description: analysisData.personalityDescription,
+        health_score: analysisData.healthScore,
+        health_status: analysisData.healthStatus,
+        overall_rating: analysisData.overallRating,
+        rating_description: analysisData.ratingDescription,
+        audio_dna: analysisData.audioDna,
+        genre_distribution: analysisData.genreDistribution,
+        subgenres: analysisData.subgenres,
+        top_tracks: analysisData.topTracks,
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      console.error('Error saving analysis:', error);
+      return null;
+    }
+    return data?.id || null;
+  } catch (error) {
+    console.error('Error saving analysis to database:', error);
+    return null;
+  }
+}
+
+/**
+ * Save battle result to database
+ */
+async function saveBattleToDatabase(
+  userId: string,
+  playlist1Id: string,
+  playlist2Id: string,
+  battleData: {
+    compatibilityScore: number;
+    winner: string;
+    winnerReason?: string;
+    sharedArtists: string[];
+    sharedGenres: string[];
+    sharedTracks: any[];
+    audioData: any[];
+    playlist1Data: any;
+    playlist2Data: any;
+  }
+): Promise<string | null> {
+  if (!supabase) {
+    console.warn('Supabase not configured, skipping battle save');
+    return null;
+  }
+
+  try {
+    // Generate winner reason if not provided
+    let winnerReason = battleData.winnerReason;
+    if (!winnerReason) {
+      if (battleData.winner === 'playlist1') {
+        winnerReason = `Playlist 1 wins with score ${battleData.playlist1Data.score} vs ${battleData.playlist2Data.score}`;
+      } else if (battleData.winner === 'playlist2') {
+        winnerReason = `Playlist 2 wins with score ${battleData.playlist2Data.score} vs ${battleData.playlist1Data.score}`;
+      } else {
+        winnerReason = 'Both playlists are evenly matched';
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('battles')
+      .insert({
+        user_id: userId,
+        playlist1_id: playlist1Id,
+        playlist2_id: playlist2Id,
+        compatibility_score: battleData.compatibilityScore,
+        winner: battleData.winner,
+        winner_reason: winnerReason,
+        shared_artists: battleData.sharedArtists,
+        shared_genres: battleData.sharedGenres,
+        shared_tracks: battleData.sharedTracks,
+        audio_data: battleData.audioData,
+        playlist1_data: battleData.playlist1Data,
+        playlist2_data: battleData.playlist2Data,
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      console.error('Error saving battle:', error);
+      return null;
+    }
+    return data?.id || null;
+  } catch (error) {
+    console.error('Error saving battle to database:', error);
+    return null;
+  }
+}
+
+// ============================================================================
+// SPOTIFY OAUTH ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/spotify/authorize
+ * Generate Spotify OAuth authorization URL
+ */
+app.get('/api/spotify/authorize', (req, res) => {
+  try {
+    const clientId = process.env.SPOTIFY_CLIENT_ID;
+    if (!clientId) {
+      return res.status(500).json({
+        error: 'Spotify Client ID not configured',
+        code: 'CONFIG_ERROR'
+      });
+    }
+
+    const redirectUri = req.query.redirect_uri as string || 'com.antidote.app://auth/callback';
+    const state = req.query.state as string || Math.random().toString(36).substring(7);
+    
+    // Spotify OAuth scopes
+    const scopes = [
+      'user-read-private',
+      'user-read-email',
+      'playlist-read-private',
+      'playlist-read-collaborative',
+      'user-library-read',
+      'user-top-read',
+      'user-read-recently-played',
+      'playlist-modify-public',
+      'playlist-modify-private'
+    ].join(' ');
+
+    const authUrl = `https://accounts.spotify.com/authorize?` +
+      `client_id=${encodeURIComponent(clientId)}&` +
+      `response_type=code&` +
+      `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+      `scope=${encodeURIComponent(scopes)}&` +
+      `state=${encodeURIComponent(state)}&` +
+      `show_dialog=false`;
+
+    res.json({
+      authUrl,
+      state
+    });
+  } catch (error) {
+    console.error('Error generating auth URL:', error);
+    res.status(500).json({
+      error: 'Failed to generate authorization URL',
+      code: 'AUTH_URL_ERROR'
+    });
+  }
+});
+
+/**
+ * POST /api/spotify/callback
+ * Exchange authorization code for access and refresh tokens
+ */
+app.post('/api/spotify/callback', async (req, res) => {
+  try {
+    const { code, redirect_uri } = req.body as { code?: string; redirect_uri?: string };
+    
+    if (!code) {
+      return res.status(400).json({
+        error: 'Authorization code is required',
+        code: 'CODE_REQUIRED'
+      });
+    }
+
+    const clientId = process.env.SPOTIFY_CLIENT_ID;
+    const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+    const redirectUri = redirect_uri || 'com.antidote.app://auth/callback';
+
+    if (!clientId) {
+      return res.status(500).json({
+        error: 'Spotify Client ID not configured',
+        code: 'CONFIG_ERROR'
+      });
+    }
+
+    // Note: For user OAuth, we still need client_secret on backend to exchange code for tokens
+    // The client_secret is kept secret on the backend and never exposed to frontend
+    if (!clientSecret) {
+      console.warn('⚠️  SPOTIFY_CLIENT_SECRET not configured. Token exchange will fail.');
+      console.warn('   For local development, you can get this from Spotify Developer Dashboard.');
+      return res.status(500).json({
+        error: 'Spotify Client Secret not configured. Required for token exchange.',
+        code: 'CONFIG_ERROR',
+        hint: 'Add SPOTIFY_CLIENT_SECRET to your backend .env file'
+      });
+    }
+
+    // Exchange code for tokens
+    const tokenUrl = 'https://accounts.spotify.com/api/token';
+    const params = new URLSearchParams();
+    params.append('grant_type', 'authorization_code');
+    params.append('code', code);
+    params.append('redirect_uri', redirectUri);
+    params.append('client_id', clientId);
+    params.append('client_secret', clientSecret);
+
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Spotify token exchange error:', errorText);
+      return res.status(response.status).json({
+        error: 'Failed to exchange code for tokens',
+        code: 'TOKEN_EXCHANGE_ERROR',
+        details: errorText
+      });
+    }
+
+    const tokenData = await response.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+      token_type?: string;
+      scope?: string;
+    };
+
+    // Return tokens to frontend
+    res.json({
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      expires_in: tokenData.expires_in,
+      token_type: tokenData.token_type || 'Bearer',
+      scope: tokenData.scope
+    });
+  } catch (error) {
+    console.error('Error in token exchange:', error);
+    res.status(500).json({
+      error: 'Internal server error during token exchange',
+      code: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+/**
+ * GET /api/spotify/me
+ * Get Spotify user profile using access token
+ */
+app.get('/api/spotify/me', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    // Create Spotify API with user token
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    // Fetch user profile
+    const userProfile = await spotifyApi.getMe();
+    
+    // Return user info
+    res.json({
+      id: userProfile.body.id,
+      email: userProfile.body.email,
+      display_name: userProfile.body.display_name,
+      images: userProfile.body.images,
+      country: userProfile.body.country,
+      product: userProfile.body.product, // premium, free, etc.
+      followers: userProfile.body.followers?.total || 0,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/spotify/playlists
+ * Get user's Spotify playlists
+ */
+app.get('/api/spotify/playlists', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    // Create Spotify API with user token
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    // Fetch all user playlists (handle pagination)
+    const allPlaylists: any[] = [];
+    let offset = 0;
+    const limit = 50;
+    
+    while (true) {
+      const response = await spotifyApi.getUserPlaylists({ limit, offset });
+      const playlists = response.body.items;
+      if (!playlists || playlists.length === 0) break;
+      allPlaylists.push(...playlists);
+      offset += limit;
+      if (playlists.length < limit) break;
+    }
+    
+    // Format response
+    const formattedPlaylists = allPlaylists.map(playlist => ({
+      id: playlist.id,
+      name: playlist.name,
+      description: playlist.description || null,
+      images: playlist.images || [],
+      owner: playlist.owner?.display_name || 'Unknown',
+      trackCount: playlist.tracks?.total || 0,
+      public: playlist.public || false,
+      url: playlist.external_urls?.spotify || null,
+      snapshotId: playlist.snapshot_id || null,
+    }));
+    
+    res.json(formattedPlaylists);
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * POST /api/auth/spotify-signin
+ * Create or sign in Supabase user from Spotify OAuth
+ * This endpoint creates a Supabase user session after Spotify OAuth
+ */
+app.post('/api/auth/spotify-signin', async (req, res) => {
+  try {
+    const { spotifyUser, accessToken, refreshToken } = req.body as {
+      spotifyUser?: {
+        id: string;
+        email?: string;
+        display_name?: string;
+        images?: any[];
+      };
+      accessToken?: string;
+      refreshToken?: string;
+    };
+
+    if (!supabase) {
+      return res.status(500).json({
+        error: 'Supabase not configured',
+        code: 'CONFIG_ERROR'
+      });
+    }
+
+    if (!spotifyUser || !spotifyUser.id) {
+      return res.status(400).json({
+        error: 'Spotify user info is required',
+        code: 'USER_INFO_REQUIRED'
+      });
+    }
+
+    // Use Spotify email or generate one from Spotify ID
+    const email = spotifyUser.email || `${spotifyUser.id}@spotify.antidote.app`;
+    const displayName = spotifyUser.display_name || 'Spotify User';
+    const spotifyId = spotifyUser.id;
+    const avatarUrl = spotifyUser.images?.[0]?.url || null;
+
+    // Check if user already exists in auth.users
+    let userId: string | null = null;
+    let userExists = false;
+
+    try {
+      // Try to find user by email using admin API
+      const { data: existingUsers, error: listError } = await supabase!.auth.admin.listUsers();
+      
+      if (!listError && existingUsers) {
+        const existingUser = existingUsers.users.find(u => 
+          u.email === email || u.user_metadata?.spotify_id === spotifyId
+        );
+        
+        if (existingUser) {
+          userId = existingUser.id;
+          userExists = true;
+          
+          // Update user metadata
+          await supabase!.auth.admin.updateUserById(userId, {
+            user_metadata: {
+              ...existingUser.user_metadata,
+              display_name: displayName,
+              avatar_url: avatarUrl,
+              spotify_id: spotifyId,
+              provider: 'spotify',
+            },
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Error checking existing users:', err);
+    }
+
+    // Create new user if doesn't exist
+    if (!userExists || !userId) {
+      // Generate a secure random password (user won't need it, but Supabase requires it)
+      const randomPassword = Math.random().toString(36).slice(-16) + 
+                            Math.random().toString(36).slice(-16).toUpperCase() + 
+                            '!@#';
+      
+      const { data: authData, error: authError } = await supabase!.auth.admin.createUser({
+        email: email,
+        password: randomPassword,
+        email_confirm: true, // Auto-confirm email for OAuth users
+        user_metadata: {
+          display_name: displayName,
+          avatar_url: avatarUrl,
+          spotify_id: spotifyId,
+          provider: 'spotify',
+        },
+      });
+
+      if (authError || !authData.user) {
+        return res.status(500).json({
+          error: 'Failed to create user',
+          code: 'USER_CREATION_ERROR',
+          details: authError?.message
+        });
+      }
+
+      userId = authData.user.id;
+    }
+
+    if (!userId) {
+      return res.status(500).json({
+        error: 'Failed to create or find user',
+        code: 'USER_ERROR'
+      });
+    }
+
+    // Ensure user profile exists in users table (userId is guaranteed to be non-null here)
+    await ensureUserProfile(userId!, email, displayName);
+
+    if (!userId) {
+      return res.status(500).json({
+        error: 'Failed to create or find user',
+        code: 'USER_ERROR'
+      });
+    }
+
+    // Generate a magic link for the user to sign in
+    // The frontend will use this to establish a session
+    const { data: linkData, error: linkError } = await supabase!.auth.admin.generateLink({
+      type: 'magiclink',
+      email: email,
+    });
+
+    // Return user info
+    // Frontend will use the magic link to sign in
+    res.json({
+      userId,
+      email,
+      displayName,
+      spotifyId,
+      avatarUrl,
+      magicLink: linkData?.properties?.action_link || null,
+      // Also return the hashed token for direct session creation if needed
+      hashedToken: linkData?.properties?.hashed_token || null,
+    });
+  } catch (error) {
+    console.error('Error in Spotify signin:', error);
+    res.status(500).json({
+      error: 'Internal server error during signin',
+      code: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+/**
+ * POST /api/spotify/refresh
+ * Refresh Spotify access token using refresh token
+ */
+app.post('/api/spotify/refresh', async (req, res) => {
+  try {
+    const { refresh_token } = req.body as { refresh_token?: string };
+    
+    if (!refresh_token) {
+      return res.status(400).json({
+        error: 'Refresh token is required',
+        code: 'REFRESH_TOKEN_REQUIRED'
+      });
+    }
+
+    const clientId = process.env.SPOTIFY_CLIENT_ID;
+    const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({
+        error: 'Spotify credentials not configured',
+        code: 'CONFIG_ERROR'
+      });
+    }
+
+    // Refresh token
+    const tokenUrl = 'https://accounts.spotify.com/api/token';
+    const params = new URLSearchParams();
+    params.append('grant_type', 'refresh_token');
+    params.append('refresh_token', refresh_token);
+    params.append('client_id', clientId);
+    params.append('client_secret', clientSecret);
+
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Spotify token refresh error:', errorText);
+      return res.status(response.status).json({
+        error: 'Failed to refresh token',
+        code: 'TOKEN_REFRESH_ERROR',
+        details: errorText
+      });
+    }
+
+    const tokenData = await response.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+      token_type?: string;
+      scope?: string;
+    };
+
+    // Return new tokens
+    res.json({
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token || refresh_token, // Spotify may not return new refresh token
+      expires_in: tokenData.expires_in,
+      token_type: tokenData.token_type || 'Bearer',
+      scope: tokenData.scope
+    });
+  } catch (error) {
+    console.error('Error in token refresh:', error);
+    res.status(500).json({
+      error: 'Internal server error during token refresh',
+      code: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+// ============================================================================
+// SUPABASE AUTH PROXY ENDPOINTS
+// ============================================================================
+
+/**
+ * POST /api/auth/signup
+ * Proxy for Supabase sign up (works around DNS resolution issues on mobile)
+ */
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { email, password } = req.body as { email?: string; password?: string };
+    
+    if (!email || !password) {
+      return res.status(400).json({
+        error: 'Email and password are required',
+        code: 'MISSING_CREDENTIALS'
+      });
+    }
+
+    if (!supabase) {
+      return res.status(500).json({
+        error: 'Supabase not configured',
+        code: 'CONFIG_ERROR'
+      });
+    }
+
+    // Use Supabase admin API to create user
+    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+      email: email,
+      password: password,
+      email_confirm: true, // Auto-confirm for testing
+    });
+
+    if (authError || !authData.user) {
+      return res.status(400).json({
+        error: authError?.message || 'Failed to create user',
+        code: 'SIGNUP_ERROR'
+      });
+    }
+
+    const userId = authData.user.id;
+
+    // Ensure user profile exists
+    await ensureUserProfile(userId, email);
+
+    // Generate session token for the user
+    const { data: sessionData, error: sessionError } = await supabase.auth.admin.generateLink({
+      type: 'magiclink',
+      email: email,
+    });
+
+    if (sessionError || !sessionData) {
+      return res.status(500).json({
+        error: 'Failed to generate session',
+        code: 'SESSION_ERROR'
+      });
+    }
+
+    // Return user info and session token
+    res.json({
+      user: {
+        id: userId,
+        email: email,
+      },
+      session: {
+        access_token: sessionData.properties?.hashed_token || null,
+        refresh_token: null,
+        expires_in: 3600,
+      },
+    });
+  } catch (error) {
+    console.error('Error in signup:', error);
+    res.status(500).json({
+      error: 'Internal server error during signup',
+      code: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+/**
+ * POST /api/auth/signin
+ * Proxy for Supabase sign in (works around DNS resolution issues on mobile)
+ */
+app.post('/api/auth/signin', async (req, res) => {
+  try {
+    const { email, password } = req.body as { email?: string; password?: string };
+    
+    if (!email || !password) {
+      return res.status(400).json({
+        error: 'Email and password are required',
+        code: 'MISSING_CREDENTIALS'
+      });
+    }
+
+    if (!supabase) {
+      return res.status(500).json({
+        error: 'Supabase not configured',
+        code: 'CONFIG_ERROR'
+      });
+    }
+
+    // Try to sign in using Supabase auth
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      email: email,
+      password: password,
+    });
+
+    if (authError || !authData.user || !authData.session) {
+      return res.status(401).json({
+        error: authError?.message || 'Invalid credentials',
+        code: 'SIGNIN_ERROR'
+      });
+    }
+
+    // Ensure user profile exists
+    await ensureUserProfile(authData.user.id, email);
+
+    // Return user info and session
+    res.json({
+      user: {
+        id: authData.user.id,
+        email: authData.user.email,
+      },
+      session: {
+        access_token: authData.session.access_token,
+        refresh_token: authData.session.refresh_token,
+        expires_in: authData.session.expires_in || 3600,
+      },
+    });
+  } catch (error) {
+    console.error('Error in signin:', error);
+    res.status(500).json({
+      error: 'Internal server error during signin',
+      code: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+// ============================================================================
 // API ENDPOINTS
 // ============================================================================
 
 /**
  * POST /api/analyze
  * Analyze a Spotify playlist
+ * Rate limited: 20 requests per 15 minutes for unauthenticated users
  */
-app.post('/api/analyze', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+app.post('/api/analyze', 
+  rateLimitUnauthenticated({ windowMs: 15 * 60 * 1000, max: 20, message: 'Too many analysis requests. Please sign in for unlimited access or try again in 15 minutes.' }),
+  extractSpotifyToken, 
+  async (req: SpotifyRequest, res) => {
   try {
     const { url } = req.body as { url?: string };
     const userToken = req.spotifyToken;
@@ -508,6 +1417,73 @@ app.post('/api/analyze', extractSpotifyToken, async (req: SpotifyRequest, res) =
       topTracks,
     };
     
+    // Save to database if user is authenticated
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ') && supabase) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const { data: { user } } = await supabase.auth.getUser(token);
+        
+        if (user) {
+          // Ensure user profile exists
+          await ensureUserProfile(user.id, user.email, user.user_metadata?.display_name);
+          
+          // Save playlist
+          const dbPlaylistId = await savePlaylistToDatabase(
+            user.id,
+            playlistId,
+            url,
+            playlist.body.name,
+            playlist.body.owner?.display_name || 'Unknown',
+            playlist.body.images?.[0]?.url || null,
+            trackIds.length
+          );
+          
+          if (dbPlaylistId) {
+            // Save tracks
+            const audioFeaturesMap = new Map<string, any>();
+            audioFeaturesList.forEach((features, index) => {
+              if (trackIds[index]) {
+                audioFeaturesMap.set(trackIds[index], features);
+              }
+            });
+            
+            const tracksForDb = allTracks
+              .map((item: any) => item.track)
+              .filter((t: any) => t && t.id)
+              .map((t: any) => ({
+                id: t.id,
+                name: t.name,
+                artists: (t.artists || []).map((a: any) => a.name),
+                album: t.album?.name,
+                albumArt: t.album?.images?.[0]?.url,
+                duration_ms: t.duration_ms,
+                popularity: t.popularity,
+              }));
+            
+            await saveTracksToDatabase(dbPlaylistId, tracksForDb, audioFeaturesMap);
+            
+            // Save analysis
+            await saveAnalysisToDatabase(user.id, dbPlaylistId, {
+              personalityType,
+              personalityDescription,
+              healthScore,
+              healthStatus,
+              overallRating: Math.round(overallRating * 10) / 10,
+              ratingDescription,
+              audioDna,
+              genreDistribution,
+              subgenres,
+              topTracks,
+            });
+          }
+        }
+      } catch (dbError) {
+        // Log error but don't fail the request
+        console.error('Error saving analysis to database:', dbError);
+      }
+    }
+    
     res.json(analysisResult);
   } catch (error: unknown) {
     handleSpotifyError(error, res);
@@ -517,8 +1493,12 @@ app.post('/api/analyze', extractSpotifyToken, async (req: SpotifyRequest, res) =
 /**
  * POST /api/battle
  * Battle two playlists
+ * Rate limited: 20 requests per 15 minutes for unauthenticated users
  */
-app.post('/api/battle', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+app.post('/api/battle', 
+  rateLimitUnauthenticated({ windowMs: 15 * 60 * 1000, max: 20, message: 'Too many battle requests. Please sign in for unlimited access or try again in 15 minutes.' }),
+  extractSpotifyToken, 
+  async (req: SpotifyRequest, res) => {
   try {
     const { url1, url2 } = req.body as { url1?: string; url2?: string };
     const userToken = req.spotifyToken;
@@ -755,6 +1735,63 @@ app.post('/api/battle', extractSpotifyToken, async (req: SpotifyRequest, res) =>
       audioData,
     };
     
+    // Save to database if user is authenticated
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ') && supabase) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const { data: { user } } = await supabase.auth.getUser(token);
+        
+        if (user) {
+          // Ensure user profile exists
+          await ensureUserProfile(user.id, user.email, user.user_metadata?.display_name);
+          
+          // Save both playlists
+          const dbPlaylist1Id = await savePlaylistToDatabase(
+            user.id,
+            playlist1Id,
+            url1,
+            playlist1.body.name,
+            playlist1.body.owner?.display_name || 'Unknown',
+            playlist1.body.images?.[0]?.url || null,
+            trackIds1.length
+          );
+          
+          const dbPlaylist2Id = await savePlaylistToDatabase(
+            user.id,
+            playlist2Id,
+            url2,
+            playlist2.body.name,
+            playlist2.body.owner?.display_name || 'Unknown',
+            playlist2.body.images?.[0]?.url || null,
+            trackIds2.length
+          );
+          
+          if (dbPlaylist1Id && dbPlaylist2Id) {
+            // Save battle
+            await saveBattleToDatabase(
+              user.id,
+              dbPlaylist1Id,
+              dbPlaylist2Id,
+              {
+                compatibilityScore,
+                winner,
+                sharedArtists,
+                sharedGenres,
+                sharedTracks,
+                audioData,
+                playlist1Data: battleResult.playlist1,
+                playlist2Data: battleResult.playlist2,
+              }
+            );
+          }
+        }
+      } catch (dbError) {
+        // Log error but don't fail the request
+        console.error('Error saving battle to database:', dbError);
+      }
+    }
+    
     res.json(battleResult);
   } catch (error: unknown) {
     handleSpotifyError(error, res);
@@ -762,8 +1799,83 @@ app.post('/api/battle', extractSpotifyToken, async (req: SpotifyRequest, res) =>
 });
 
 /**
+ * GET /api/recommendations/strategies
+ * List available recommendation strategies
+ */
+app.get('/api/recommendations/strategies', (req, res) => {
+  res.json([
+    {
+      id: 'best_next',
+      name: 'Best Next Track',
+      description: 'AI picks the perfect next song based on current momentum',
+      icon: '💡',
+    },
+    {
+      id: 'mood_safe',
+      name: 'Mood-Safe Pick',
+      description: 'Maintains your current vibe without jarring changes',
+      icon: '❤️',
+    },
+    {
+      id: 'rare_match',
+      name: 'Rare Match For You',
+      description: 'Hidden gems that align with your unique taste',
+      icon: '🧭',
+    },
+    {
+      id: 'return_familiar',
+      name: 'Return To Familiar',
+      description: 'Deep cuts from artists you already love',
+      icon: '🔄',
+    },
+    {
+      id: 'short_session',
+      name: 'Short Session Mode',
+      description: 'Perfect tracks for quick 5-10 minute breaks',
+      icon: '🎵',
+    },
+    {
+      id: 'energy_adjust',
+      name: 'Energy Adjustment',
+      description: 'Gradually shift the energy up or down',
+      icon: '⚡',
+    },
+    {
+      id: 'professional_discovery',
+      name: 'Professional Discovery',
+      description: 'Multi-source AI analysis for sophisticated recommendations',
+      icon: '✨',
+    },
+    {
+      id: 'taste_expansion',
+      name: 'Taste Expansion',
+      description: 'Bridge to new genres while respecting your preferences',
+      icon: '🌉',
+    },
+    {
+      id: 'deep_cuts',
+      name: 'Deep Cuts',
+      description: 'Hidden gems from your favorite artists',
+      icon: '💎',
+    },
+    {
+      id: 'continue_session',
+      name: 'Continue Session',
+      description: 'Based on your recently played tracks',
+      icon: '▶️',
+    },
+    {
+      id: 'from_library',
+      name: 'From Your Library',
+      description: 'Deep cuts from your saved tracks',
+      icon: '📚',
+    },
+  ]);
+});
+
+/**
  * GET /api/recommendations
- * Get music recommendations
+ * Get music recommendations using one of 6 strategies
  */
 app.get('/api/recommendations', extractSpotifyToken, async (req: SpotifyRequest, res) => {
   try {
@@ -778,45 +1890,295 @@ app.get('/api/recommendations', extractSpotifyToken, async (req: SpotifyRequest,
     }
     
     const spotifyApi = createSpotifyApi(userToken);
+    const strategyType = type as string || 'best_next';
     
     // Build recommendation parameters
     const recommendationParams: RecommendationParams = {
-      limit: 20, // Default limit
+      limit: 20,
     };
     
-    // Handle type-based recommendations
-    if ((type === 'best_next' || type === 'mood_safe') && playlistId) {
-      // Get tracks from playlist and use as seeds
-      const playlistIdExtracted = extractSpotifyId(playlistId as string);
-      if (playlistIdExtracted) {
-        const tracksResponse = await spotifyApi.getPlaylistTracks(playlistIdExtracted, { limit: 5 });
-        const trackIds = tracksResponse.body.items
-          .map((item: any) => item.track?.id)
-          .filter((id: any): id is string => typeof id === 'string');
-        if (trackIds.length > 0) {
-          recommendationParams.seed_tracks = trackIds.slice(0, 5);
+    // Strategy 1: Best Next Track - Cosine similarity on 8D audio vector
+    if (strategyType === 'best_next') {
+      if (playlistId) {
+        const playlistIdExtracted = extractSpotifyId(playlistId as string);
+        if (playlistIdExtracted) {
+          // Get last few tracks from playlist for seed
+          const tracksResponse = await spotifyApi.getPlaylistTracks(playlistIdExtracted, { limit: 5 });
+          const trackIds = tracksResponse.body.items
+            .map((item: any) => item.track?.id)
+            .filter((id: any): id is string => typeof id === 'string');
+          if (trackIds.length > 0) {
+            recommendationParams.seed_tracks = trackIds.slice(0, 5);
+          }
         }
-      }
-    } else if (type && !playlistId) {
-      // Handle strategy-based recommendations without playlist
-      // Use default genres based on strategy type
-      const strategyGenres: { [key: string]: string[] } = {
-        'similar_audio': ['pop', 'indie', 'alternative'],
-        'genre_exploration': ['rock', 'electronic', 'hip-hop', 'jazz', 'classical'],
-        'artist_collaborations': ['pop', 'indie'],
-        'mood_match': ['pop', 'indie', 'acoustic'],
-        'flavor_profile': ['indie', 'alternative', 'folk'],
-        'discovery': ['indie', 'alternative', 'electronic'],
-      };
-      
-      if (strategyGenres[type as string]) {
-        recommendationParams.seed_genres = strategyGenres[type as string].slice(0, 5);
+      } else if (seed_tracks) {
+        recommendationParams.seed_tracks = (seed_tracks as string).split(',').slice(0, 5);
       } else {
-        // Default fallback genres
-        recommendationParams.seed_genres = ['pop', 'indie', 'rock'];
+        return res.status(400).json({ error: 'Playlist ID or seed tracks required for best_next strategy' });
       }
-    } else {
-      // Use provided seeds
+    }
+    
+    // Strategy 2: Mood-Safe Pick - Maintain valence ±0.1, energy ±0.2
+    else if (strategyType === 'mood_safe') {
+      if (playlistId) {
+        const playlistIdExtracted = extractSpotifyId(playlistId as string);
+        if (playlistIdExtracted) {
+          // Get tracks and audio features
+          const tracksResponse = await spotifyApi.getPlaylistTracks(playlistIdExtracted, { limit: 10 });
+          const trackIds = tracksResponse.body.items
+            .map((item: any) => item.track?.id)
+            .filter((id: any): id is string => typeof id === 'string');
+          
+          if (trackIds.length > 0) {
+            // Get audio features
+            const featuresResponse = await spotifyApi.getAudioFeaturesForTracks(trackIds.slice(0, 10));
+            const features = featuresResponse.body.audio_features.filter((f: any) => f !== null);
+            
+            if (features.length > 0) {
+              const avgValence = features.reduce((sum: number, f: any) => sum + (f.valence || 0), 0) / features.length;
+              const avgEnergy = features.reduce((sum: number, f: any) => sum + (f.energy || 0), 0) / features.length;
+              
+              recommendationParams.seed_tracks = trackIds.slice(0, 5);
+              recommendationParams.target_energy = avgEnergy;
+              recommendationParams.min_energy = Math.max(0, avgEnergy - 0.2);
+              recommendationParams.max_energy = Math.min(1, avgEnergy + 0.2);
+              // Valence constraints would need min_valence/max_valence but Spotify API doesn't support this directly
+              // So we use seed tracks to maintain mood
+            }
+          }
+        }
+      } else {
+        return res.status(400).json({ error: 'Playlist ID required for mood_safe strategy' });
+      }
+    }
+    
+    // Strategy 3: Rare Match For You - Low popularity (<30) with high similarity (>0.85)
+    else if (strategyType === 'rare_match') {
+      if (playlistId) {
+        const playlistIdExtracted = extractSpotifyId(playlistId as string);
+        if (playlistIdExtracted) {
+          const tracksResponse = await spotifyApi.getPlaylistTracks(playlistIdExtracted, { limit: 5 });
+          const trackIds = tracksResponse.body.items
+            .map((item: any) => item.track?.id)
+            .filter((id: any): id is string => typeof id === 'string');
+          if (trackIds.length > 0) {
+            recommendationParams.seed_tracks = trackIds.slice(0, 5);
+            // Note: Spotify API doesn't directly support popularity filtering in recommendations
+            // This would need post-filtering or a different approach
+          }
+        }
+      } else {
+        recommendationParams.seed_genres = ['indie', 'alternative', 'underground'];
+      }
+    }
+    
+    // Strategy 4: Return To Familiar - Same artists, different tracks
+    else if (strategyType === 'return_familiar') {
+      if (playlistId) {
+        const playlistIdExtracted = extractSpotifyId(playlistId as string);
+        if (playlistIdExtracted) {
+          const tracksResponse = await spotifyApi.getPlaylistTracks(playlistIdExtracted, { limit: 50 });
+          const tracks = tracksResponse.body.items
+            .map((item: any) => item.track)
+            .filter((t: any) => t && t.artists && t.artists.length > 0);
+          
+          // Extract unique artist IDs
+          const artistIds = new Set<string>();
+          tracks.forEach((track: any) => {
+            track.artists.forEach((artist: any) => {
+              if (artist.id) artistIds.add(artist.id);
+            });
+          });
+          
+          if (artistIds.size > 0) {
+            recommendationParams.seed_artists = Array.from(artistIds).slice(0, 5);
+          } else {
+            return res.status(400).json({ error: 'No artists found in playlist' });
+          }
+        }
+      } else if (seed_artists) {
+        recommendationParams.seed_artists = (seed_artists as string).split(',').slice(0, 5);
+      } else {
+        return res.status(400).json({ error: 'Playlist ID or seed artists required for return_familiar strategy' });
+      }
+    }
+    
+    // Strategy 5: Short Session Mode - Duration 5-10 minutes, high engagement
+    else if (strategyType === 'short_session') {
+      if (playlistId) {
+        const playlistIdExtracted = extractSpotifyId(playlistId as string);
+        if (playlistIdExtracted) {
+          const tracksResponse = await spotifyApi.getPlaylistTracks(playlistIdExtracted, { limit: 5 });
+          const trackIds = tracksResponse.body.items
+            .map((item: any) => item.track?.id)
+            .filter((id: any): id is string => typeof id === 'string');
+          if (trackIds.length > 0) {
+            recommendationParams.seed_tracks = trackIds.slice(0, 5);
+            // Note: Duration filtering would need post-processing of results
+            // Spotify API doesn't support duration constraints in recommendations
+          }
+        }
+      } else {
+        recommendationParams.seed_genres = ['pop', 'indie', 'acoustic'];
+      }
+    }
+    
+    // Strategy 6: Energy Adjustment - Gradual energy shift (±0.3)
+    else if (strategyType === 'energy_adjust') {
+      if (playlistId) {
+        const playlistIdExtracted = extractSpotifyId(playlistId as string);
+        if (playlistIdExtracted) {
+          const tracksResponse = await spotifyApi.getPlaylistTracks(playlistIdExtracted, { limit: 10 });
+          const trackIds = tracksResponse.body.items
+            .map((item: any) => item.track?.id)
+            .filter((id: any): id is string => typeof id === 'string');
+          
+          if (trackIds.length > 0) {
+            const featuresResponse = await spotifyApi.getAudioFeaturesForTracks(trackIds.slice(0, 10));
+            const features = featuresResponse.body.audio_features.filter((f: any) => f !== null);
+            
+            if (features.length > 0) {
+              const avgEnergy = features.reduce((sum: number, f: any) => sum + (f.energy || 0), 0) / features.length;
+              // Adjust energy up by 0.3 (or down if already high)
+              const targetEnergy = avgEnergy >= 0.7 ? Math.max(0, avgEnergy - 0.3) : Math.min(1, avgEnergy + 0.3);
+              
+              recommendationParams.seed_tracks = trackIds.slice(0, 5);
+              recommendationParams.target_energy = targetEnergy;
+              recommendationParams.min_energy = Math.max(0, targetEnergy - 0.1);
+              recommendationParams.max_energy = Math.min(1, targetEnergy + 0.1);
+            }
+          }
+        }
+      } else {
+        return res.status(400).json({ error: 'Playlist ID required for energy_adjust strategy' });
+      }
+    }
+    
+    // Strategy 7: Professional Discovery - Multi-source analysis
+    else if (strategyType === 'professional_discovery') {
+      // Use top tracks, saved tracks, and recently played for comprehensive recommendations
+      const [topTracks, savedTracks, recentlyPlayed] = await Promise.all([
+        spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 10 }).catch(() => ({ body: { items: [] } })),
+        spotifyApi.getMySavedTracks({ limit: 10 }).catch(() => ({ body: { items: [] } })),
+        spotifyApi.getMyRecentlyPlayedTracks({ limit: 5 }).catch(() => ({ body: { items: [] } })),
+      ]);
+
+      const allSeedTracks: string[] = [];
+      
+      // Add top tracks
+      (topTracks.body.items || []).forEach((track: any) => {
+        if (track.id) allSeedTracks.push(track.id);
+      });
+      
+      // Add saved tracks
+      (savedTracks.body.items || []).forEach((item: any) => {
+        if (item.track?.id) allSeedTracks.push(item.track.id);
+      });
+      
+      // Add recently played
+      (recentlyPlayed.body.items || []).forEach((item: any) => {
+        if (item.track?.id) allSeedTracks.push(item.track.id);
+      });
+
+      // Remove duplicates and take first 5
+      recommendationParams.seed_tracks = Array.from(new Set(allSeedTracks)).slice(0, 5);
+      
+      if (recommendationParams.seed_tracks.length === 0) {
+        return res.status(400).json({ error: 'Insufficient listening data for professional discovery' });
+      }
+    }
+    
+    // Strategy 8: Taste Expansion - Bridge to new genres
+    else if (strategyType === 'taste_expansion') {
+      // Get top artists and find related genres
+      const topArtists = await spotifyApi.getMyTopArtists({ time_range: 'medium_term', limit: 20 })
+        .catch(() => ({ body: { items: [] } }));
+      
+      const allGenres = new Set<string>();
+      (topArtists.body.items || []).forEach((artist: any) => {
+        if (artist.genres) {
+          artist.genres.forEach((genre: string) => allGenres.add(genre));
+        }
+      });
+      
+      // Use top tracks as seeds but target slightly different genres
+      const topTracks = await spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 5 })
+        .catch(() => ({ body: { items: [] } }));
+      
+      const seedTracks = (topTracks.body.items || [])
+        .map((track: any) => track.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      
+      if (seedTracks.length > 0) {
+        recommendationParams.seed_tracks = seedTracks;
+        // Add some related but not identical genres
+        const genreArray = Array.from(allGenres);
+        if (genreArray.length > 0) {
+          recommendationParams.seed_genres = genreArray.slice(0, 2);
+        }
+      } else {
+        return res.status(400).json({ error: 'Insufficient data for taste expansion' });
+      }
+    }
+    
+    // Strategy 9: Deep Cuts - Hidden gems from favorite artists
+    else if (strategyType === 'deep_cuts') {
+      const topArtists = await spotifyApi.getMyTopArtists({ time_range: 'long_term', limit: 5 })
+        .catch(() => ({ body: { items: [] } }));
+      
+      const artistIds = (topArtists.body.items || [])
+        .map((artist: any) => artist.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      
+      if (artistIds.length > 0) {
+        recommendationParams.seed_artists = artistIds;
+        // Target lower popularity for deep cuts
+        recommendationParams.target_popularity = 30;
+      } else {
+        return res.status(400).json({ error: 'Insufficient artist data for deep cuts' });
+      }
+    }
+    
+    // Strategy 10: Continue Your Session - Based on recently played
+    else if (strategyType === 'continue_session') {
+      const recentlyPlayed = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 10 })
+        .catch(() => ({ body: { items: [] } }));
+      
+      const seedTracks = (recentlyPlayed.body.items || [])
+        .map((item: any) => item.track?.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      
+      if (seedTracks.length > 0) {
+        recommendationParams.seed_tracks = seedTracks;
+      } else {
+        return res.status(400).json({ error: 'No recently played tracks found' });
+      }
+    }
+    
+    // Strategy 11: From Your Library - Deep cuts from saved tracks
+    else if (strategyType === 'from_library') {
+      const savedTracks = await spotifyApi.getMySavedTracks({ limit: 20 })
+        .catch(() => ({ body: { items: [] } }));
+      
+      const seedTracks = (savedTracks.body.items || [])
+        .map((item: any) => item.track?.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      
+      if (seedTracks.length > 0) {
+        recommendationParams.seed_tracks = seedTracks;
+        // Target lower popularity for hidden gems
+        recommendationParams.target_popularity = 40;
+      } else {
+        return res.status(400).json({ error: 'No saved tracks found' });
+      }
+    }
+    
+    // Fallback: Use provided seeds or default
+    else {
       if (seed_tracks && typeof seed_tracks === 'string') {
         recommendationParams.seed_tracks = seed_tracks.split(',').slice(0, 5);
       }
@@ -825,6 +2187,13 @@ app.get('/api/recommendations', extractSpotifyToken, async (req: SpotifyRequest,
       }
       if (seed_artists && typeof seed_artists === 'string') {
         recommendationParams.seed_artists = seed_artists.split(',').slice(0, 5);
+      }
+      
+      // Default fallback
+      if (!recommendationParams.seed_tracks?.length && 
+          !recommendationParams.seed_genres?.length && 
+          !recommendationParams.seed_artists?.length) {
+        recommendationParams.seed_genres = ['pop', 'indie', 'rock'];
       }
     }
     
@@ -840,7 +2209,24 @@ app.get('/api/recommendations', extractSpotifyToken, async (req: SpotifyRequest,
     // Get recommendations
     const recommendations = await spotifyApi.getRecommendations(recommendationParams);
     
-    res.json(recommendations.body.tracks);
+    // Post-process results for strategies that need filtering
+    let tracks = recommendations.body.tracks;
+    
+    if (strategyType === 'rare_match') {
+      // Filter for low popularity tracks (post-processing)
+      tracks = tracks.filter((track: any) => (track.popularity || 100) < 30);
+    } else if (strategyType === 'short_session') {
+      // Filter for tracks 5-10 minutes (300000-600000 ms)
+      tracks = tracks.filter((track: any) => {
+        const duration = track.duration_ms || 0;
+        return duration >= 300000 && duration <= 600000;
+      });
+    } else if (strategyType === 'deep_cuts' || strategyType === 'from_library') {
+      // Filter for lower popularity (hidden gems)
+      tracks = tracks.filter((track: any) => (track.popularity || 100) < 50);
+    }
+    
+    res.json(tracks);
   } catch (error: unknown) {
     handleSpotifyError(error, res);
   }
@@ -850,20 +2236,17 @@ app.get('/api/recommendations', extractSpotifyToken, async (req: SpotifyRequest,
  * GET /api/playlists
  * Get user's saved playlists
  */
-app.get('/api/playlists', async (req, res) => {
+app.get('/api/playlists', extractSupabaseToken, async (req: SupabaseRequest, res) => {
   try {
-    // Get user ID from Authorization header (Supabase JWT token)
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const userId = req.userId;
+    
+    if (!userId) {
       return res.status(401).json({ 
-        error: 'Authorization token required',
-        code: 'AUTH_REQUIRED'
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
       });
     }
 
-    const token = authHeader.replace('Bearer ', '');
-    
-    // Verify token and get user ID
     if (!supabase) {
       return res.status(503).json({ 
         error: 'Database not configured',
@@ -871,21 +2254,11 @@ app.get('/api/playlists', async (req, res) => {
       });
     }
 
-    // Verify the JWT token and get user
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    
-    if (authError || !user) {
-      return res.status(401).json({ 
-        error: 'Invalid or expired token',
-        code: 'INVALID_TOKEN'
-      });
-    }
-
     // Query saved playlists (RLS will automatically filter by user_id)
     const { data: playlists, error: dbError } = await supabase
       .from('playlists')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
     if (dbError) {
@@ -961,6 +2334,100 @@ app.post('/api/playlists', extractSpotifyToken, async (req: SpotifyRequest, res)
 });
 
 /**
+ * POST /api/playlists/save
+ * Save a playlist to user's collection
+ */
+app.post('/api/playlists/save', extractSupabaseToken, extractSpotifyToken, async (req: SupabaseRequest & SpotifyRequest, res) => {
+  try {
+    const { url, name, description, coverUrl } = req.body as {
+      url?: string;
+      name?: string;
+      description?: string;
+      coverUrl?: string;
+    };
+    const userId = req.userId;
+    const userToken = req.spotifyToken;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+    
+    if (!url) {
+      return res.status(400).json({ 
+        error: 'Playlist URL is required' 
+      });
+    }
+    
+    // Extract playlist ID and fetch details if needed
+    const playlistId = extractSpotifyId(url);
+    if (!playlistId) {
+      return res.status(400).json({ 
+        error: 'Invalid playlist URL' 
+      });
+    }
+    
+    let playlistName = name;
+    let playlistOwner = 'Unknown';
+    let playlistCoverUrl = coverUrl || null;
+    let trackCount = 0;
+    
+    // Fetch playlist details from Spotify if token available
+    if (userToken) {
+      try {
+        const spotifyApi = createSpotifyApi(userToken);
+        const playlist = await spotifyApi.getPlaylist(playlistId);
+        playlistName = playlistName || playlist.body.name;
+        playlistOwner = playlist.body.owner?.display_name || 'Unknown';
+        playlistCoverUrl = playlistCoverUrl || playlist.body.images?.[0]?.url || null;
+        trackCount = playlist.body.tracks?.total || 0;
+      } catch (spotifyError) {
+        // If Spotify fetch fails, use provided data or defaults
+        console.warn('Failed to fetch playlist from Spotify, using provided data');
+      }
+    }
+    
+    if (!playlistName) {
+      return res.status(400).json({ 
+        error: 'Playlist name is required' 
+      });
+    }
+    
+    // Ensure user profile exists
+    await ensureUserProfile(userId);
+    
+    // Save playlist to database
+    const dbPlaylistId = await savePlaylistToDatabase(
+      userId,
+      playlistId,
+      url,
+      playlistName,
+      playlistOwner,
+      playlistCoverUrl,
+      trackCount
+    );
+    
+    if (!dbPlaylistId) {
+      return res.status(500).json({ 
+        error: 'Failed to save playlist',
+        code: 'SAVE_ERROR'
+      });
+    }
+    
+    res.json({
+      id: dbPlaylistId,
+      message: 'Playlist saved successfully',
+    });
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error('Save playlist endpoint error:', err);
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
+/**
  * DELETE /api/playlists/:id
  * Delete a playlist (if user owns it)
  */
@@ -977,6 +2444,13 @@ app.delete('/api/playlists/:id', extractSupabaseToken, async (req: SupabaseReque
     }
     
     // Delete from database (RLS will ensure user can only delete their own playlists)
+    if (!supabase) {
+      return res.status(503).json({ 
+        error: 'Database not configured',
+        code: 'DB_NOT_CONFIGURED'
+      });
+    }
+    
     const { error } = await supabase
       .from('playlists')
       .delete()
@@ -1000,20 +2474,17 @@ app.delete('/api/playlists/:id', extractSupabaseToken, async (req: SupabaseReque
  * GET /api/history
  * Get user's analysis and battle history
  */
-app.get('/api/history', async (req, res) => {
+app.get('/api/history', extractSupabaseToken, async (req: SupabaseRequest, res) => {
   try {
-    // Get user ID from Authorization header (Supabase JWT token)
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const userId = req.userId;
+    
+    if (!userId) {
       return res.status(401).json({ 
-        error: 'Authorization token required',
-        code: 'AUTH_REQUIRED'
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
       });
     }
 
-    const token = authHeader.replace('Bearer ', '');
-    
-    // Verify token and get user ID
     if (!supabase) {
       return res.status(503).json({ 
         error: 'Database not configured',
@@ -1021,21 +2492,11 @@ app.get('/api/history', async (req, res) => {
       });
     }
 
-    // Verify the JWT token and get user
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    
-    if (authError || !user) {
-      return res.status(401).json({ 
-        error: 'Invalid or expired token',
-        code: 'INVALID_TOKEN'
-      });
-    }
-
     // Query history view (RLS will automatically filter by user_id)
     const { data: history, error: dbError } = await supabase
       .from('history')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -1056,23 +2517,1163 @@ app.get('/api/history', async (req, res) => {
 });
 
 /**
- * GET /api/stats
- * Get user statistics
+ * GET /api/user/top-tracks
+ * Get user's top tracks (short-term, medium-term, or long-term)
  */
-app.get('/api/stats', async (req, res) => {
+app.get('/api/user/top-tracks', extractSpotifyToken, async (req: SpotifyRequest, res) => {
   try {
-    // Get user ID from Authorization header (Supabase JWT token)
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        error: 'Authorization token required',
-        code: 'AUTH_REQUIRED'
+    const userToken = req.spotifyToken;
+    const timeRange = (req.query.time_range as string) || 'medium_term'; // short_term, medium_term, long_term
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
       });
     }
 
-    const token = authHeader.replace('Bearer ', '');
+    const spotifyApi = createSpotifyApi(userToken);
     
-    // Verify token and get user ID
+    // Validate time_range
+    if (!['short_term', 'medium_term', 'long_term'].includes(timeRange)) {
+      return res.status(400).json({
+        error: 'Invalid time_range. Must be short_term, medium_term, or long_term',
+        code: 'INVALID_TIME_RANGE'
+      });
+    }
+
+    const response = await spotifyApi.getMyTopTracks({
+      time_range: timeRange as 'short_term' | 'medium_term' | 'long_term',
+      limit: 50
+    });
+
+    const tracks = (response.body.items || []).map((track: any) => ({
+      id: track.id,
+      name: track.name,
+      artists: track.artists.map((a: any) => ({ id: a.id, name: a.name })),
+      album: {
+        id: track.album.id,
+        name: track.album.name,
+        images: track.album.images,
+      },
+      duration_ms: track.duration_ms,
+      popularity: track.popularity,
+      preview_url: track.preview_url,
+      external_urls: track.external_urls,
+    }));
+
+    res.json({
+      time_range: timeRange,
+      tracks,
+      total: response.body.total || tracks.length,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/user/top-artists
+ * Get user's top artists (short-term, medium-term, or long-term)
+ */
+app.get('/api/user/top-artists', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const timeRange = (req.query.time_range as string) || 'medium_term';
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    if (!['short_term', 'medium_term', 'long_term'].includes(timeRange)) {
+      return res.status(400).json({
+        error: 'Invalid time_range. Must be short_term, medium_term, or long_term',
+        code: 'INVALID_TIME_RANGE'
+      });
+    }
+
+    const response = await spotifyApi.getMyTopArtists({
+      time_range: timeRange as 'short_term' | 'medium_term' | 'long_term',
+      limit: 50
+    });
+
+    const artists = (response.body.items || []).map((artist: any) => ({
+      id: artist.id,
+      name: artist.name,
+      genres: artist.genres || [],
+      images: artist.images || [],
+      popularity: artist.popularity,
+      external_urls: artist.external_urls,
+    }));
+
+    res.json({
+      time_range: timeRange,
+      artists,
+      total: response.body.total || artists.length,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/user/recently-played
+ * Get user's recently played tracks
+ */
+app.get('/api/user/recently-played', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const limit = parseInt(req.query.limit as string) || 50;
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    const response = await spotifyApi.getMyRecentlyPlayedTracks({
+      limit: Math.min(limit, 50) // Spotify API max is 50
+    });
+
+    const tracks = (response.body.items || [])
+      .filter((item: any) => item.track && item.track.id)
+      .map((item: any) => ({
+        track: {
+          id: item.track.id,
+          name: item.track.name || 'Unknown',
+          artists: (item.track.artists || []).map((a: any) => ({ id: a.id || '', name: a.name || 'Unknown' })),
+          album: {
+            id: item.track.album?.id || '',
+            name: item.track.album?.name || 'Unknown',
+            images: item.track.album?.images || [],
+          },
+          duration_ms: item.track.duration_ms || 0,
+          popularity: item.track.popularity || 0,
+          preview_url: item.track.preview_url || null,
+          external_urls: item.track.external_urls || {},
+        },
+        played_at: item.played_at || null,
+      }));
+
+    res.json({
+      tracks,
+      total: tracks.length,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/user/saved-tracks
+ * Get user's saved/liked tracks
+ */
+app.get('/api/user/saved-tracks', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = parseInt(req.query.offset as string) || 0;
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    // Fetch all saved tracks (handle pagination)
+    const allTracks: any[] = [];
+    let currentOffset = offset;
+    const pageLimit = Math.min(limit, 50); // Spotify API max is 50 per request
+    
+    while (allTracks.length < limit) {
+      const response = await spotifyApi.getMySavedTracks({
+        limit: pageLimit,
+        offset: currentOffset
+      });
+      
+      const items = response.body.items || [];
+      if (items.length === 0) break;
+      
+      allTracks.push(...items);
+      currentOffset += items.length;
+      
+      if (items.length < pageLimit) break;
+    }
+
+    const tracks = allTracks.slice(0, limit).map((item: any) => ({
+      added_at: item.added_at,
+      track: {
+        id: item.track.id,
+        name: item.track.name,
+        artists: item.track.artists.map((a: any) => ({ id: a.id, name: a.name })),
+        album: {
+          id: item.track.album.id,
+          name: item.track.album.name,
+          images: item.track.album.images,
+        },
+        duration_ms: item.track.duration_ms,
+        popularity: item.track.popularity,
+        preview_url: item.track.preview_url,
+        external_urls: item.track.external_urls,
+      },
+    }));
+
+    res.json({
+      tracks,
+      total: tracks.length,
+      offset,
+      limit,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/user/saved-albums
+ * Get user's saved albums
+ */
+app.get('/api/user/saved-albums', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = parseInt(req.query.offset as string) || 0;
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    // Fetch all saved albums (handle pagination)
+    const allAlbums: any[] = [];
+    let currentOffset = offset;
+    const pageLimit = Math.min(limit, 50);
+    
+    while (allAlbums.length < limit) {
+      const response = await spotifyApi.getMySavedAlbums({
+        limit: pageLimit,
+        offset: currentOffset
+      });
+      
+      const items = response.body.items || [];
+      if (items.length === 0) break;
+      
+      allAlbums.push(...items);
+      currentOffset += items.length;
+      
+      if (items.length < pageLimit) break;
+    }
+
+    const albums = allAlbums.slice(0, limit).map((item: any) => ({
+      added_at: item.added_at,
+      album: {
+        id: item.album.id,
+        name: item.album.name,
+        artists: item.album.artists.map((a: any) => ({ id: a.id, name: a.name })),
+        images: item.album.images || [],
+        release_date: item.album.release_date,
+        total_tracks: item.album.total_tracks,
+        external_urls: item.album.external_urls,
+      },
+    }));
+
+    res.json({
+      albums,
+      total: albums.length,
+      offset,
+      limit,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/profile/taste
+ * Get enhanced taste profile aggregating playlists, top tracks, top artists, and saved tracks
+ */
+app.get('/api/profile/taste', extractSpotifyToken, extractSupabaseToken, async (req: SpotifyRequest & SupabaseRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const userId = req.userId;
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    if (!userId || !supabase) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+
+    // Fetch data from multiple sources in parallel
+    const [topTracksShort, topTracksMedium, topTracksLong, 
+           topArtistsShort, topArtistsMedium, topArtistsLong,
+           recentlyPlayed, savedTracksResponse] = await Promise.all([
+      spotifyApi.getMyTopTracks({ time_range: 'short_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopTracks({ time_range: 'long_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopArtists({ time_range: 'short_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopArtists({ time_range: 'medium_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopArtists({ time_range: 'long_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyRecentlyPlayedTracks({ limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMySavedTracks({ limit: 50 }).catch(() => ({ body: { items: [] } })),
+    ]);
+
+    // Get analyzed playlists from database
+    const { data: analyses } = await supabase
+      .from('analyses')
+      .select('audio_dna, genre_distribution, top_tracks, personality_type')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    // Aggregate genres from all sources
+    const genreMap: { [key: string]: number } = {};
+    const artistMap: { [key: string]: number } = {};
+    const audioFeaturesList: any[] = [];
+
+    // Process top tracks
+    const processTracks = (tracks: any[], weight: number) => {
+      tracks.forEach((item: any) => {
+        const track = item.track || item;
+        if (track.artists) {
+          track.artists.forEach((artist: any) => {
+            const artistName = artist.name || artist;
+            artistMap[artistName] = (artistMap[artistName] || 0) + weight;
+          });
+        }
+      });
+    };
+
+    processTracks(topTracksShort.body.items || [], 3); // Short-term weighted higher
+    processTracks(topTracksMedium.body.items || [], 2);
+    processTracks(topTracksLong.body.items || [], 1);
+    processTracks((recentlyPlayed.body.items || []).map((i: any) => i.track), 2);
+    processTracks((savedTracksResponse.body.items || []).map((i: any) => i.track), 1.5);
+
+    // Process top artists
+    const processArtists = (artists: any[], weight: number) => {
+      artists.forEach((artist: any) => {
+        const artistName = artist.name;
+        artistMap[artistName] = (artistMap[artistName] || 0) + weight;
+        if (artist.genres) {
+          artist.genres.forEach((genre: string) => {
+            genreMap[genre] = (genreMap[genre] || 0) + weight;
+          });
+        }
+      });
+    };
+
+    processArtists(topArtistsShort.body.items || [], 3);
+    processArtists(topArtistsMedium.body.items || [], 2);
+    processArtists(topArtistsLong.body.items || [], 1);
+
+    // Process analyses from database
+    if (analyses) {
+      analyses.forEach((analysis: any) => {
+        if (analysis.genre_distribution) {
+          analysis.genre_distribution.forEach((genre: any) => {
+            genreMap[genre.name || genre] = (genreMap[genre.name || genre] || 0) + (genre.value || 1);
+          });
+        }
+        if (analysis.audio_dna) {
+          audioFeaturesList.push(analysis.audio_dna);
+        }
+      });
+    }
+
+    // Calculate average audio features
+    const avgAudioFeatures = audioFeaturesList.length > 0
+      ? {
+          energy: audioFeaturesList.reduce((sum, f) => sum + (f.energy || 0), 0) / audioFeaturesList.length,
+          danceability: audioFeaturesList.reduce((sum, f) => sum + (f.danceability || 0), 0) / audioFeaturesList.length,
+          valence: audioFeaturesList.reduce((sum, f) => sum + (f.valence || 0), 0) / audioFeaturesList.length,
+          acousticness: audioFeaturesList.reduce((sum, f) => sum + (f.acousticness || 0), 0) / audioFeaturesList.length,
+          instrumentalness: audioFeaturesList.reduce((sum, f) => sum + (f.instrumentalness || 0), 0) / audioFeaturesList.length,
+          tempo: audioFeaturesList.reduce((sum, f) => sum + (f.tempo || 0), 0) / audioFeaturesList.length,
+        }
+      : null;
+
+    // Get top genres and artists
+    const topGenres = Object.entries(genreMap)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([name, value]) => ({ name, value }));
+
+    const topArtists = Object.entries(artistMap)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 20)
+      .map(([name, value]) => ({ name, value }));
+
+    // Analyze listening evolution
+    const shortTermGenres = new Set(
+      (topArtistsShort.body.items || []).flatMap((a: any) => a.genres || [])
+    );
+    const longTermGenres = new Set(
+      (topArtistsLong.body.items || []).flatMap((a: any) => a.genres || [])
+    );
+    const newGenres = Array.from(shortTermGenres).filter(g => !longTermGenres.has(g));
+    const evolvingGenres = Array.from(shortTermGenres).filter(g => longTermGenres.has(g));
+
+    res.json({
+      topGenres,
+      topArtists,
+      audioFeatures: avgAudioFeatures,
+      listeningEvolution: {
+        newGenres,
+        evolvingGenres,
+        shortTermCount: topTracksShort.body.items?.length || 0,
+        mediumTermCount: topTracksMedium.body.items?.length || 0,
+        longTermCount: topTracksLong.body.items?.length || 0,
+      },
+      sources: {
+        topTracks: {
+          short: topTracksShort.body.items?.length || 0,
+          medium: topTracksMedium.body.items?.length || 0,
+          long: topTracksLong.body.items?.length || 0,
+        },
+        topArtists: {
+          short: topArtistsShort.body.items?.length || 0,
+          medium: topArtistsMedium.body.items?.length || 0,
+          long: topArtistsLong.body.items?.length || 0,
+        },
+        recentlyPlayed: recentlyPlayed.body.items?.length || 0,
+        savedTracks: savedTracksResponse.body.items?.length || 0,
+        analyzedPlaylists: analyses?.length || 0,
+      },
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * POST /api/mood/analyze
+ * Analyze mood from recently played tracks
+ */
+app.post('/api/mood/analyze', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const { limit = 20 } = req.body as { limit?: number };
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    // Get recently played tracks
+    const recentlyPlayed = await spotifyApi.getMyRecentlyPlayedTracks({
+      limit: Math.min(limit, 50)
+    });
+
+    const tracks = (recentlyPlayed.body.items || [])
+      .map((item: any) => item.track)
+      .filter((t: any) => t && t.id);
+    const trackIds = tracks
+      .map((t: any) => t?.id)
+      .filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+
+    if (trackIds.length === 0) {
+      return res.status(400).json({
+        error: 'No recently played tracks found',
+        code: 'NO_TRACKS'
+      });
+    }
+
+    // Get audio features for recently played tracks
+    const audioFeaturesList: any[] = [];
+    for (let i = 0; i < trackIds.length; i += 100) {
+      const batch = trackIds.slice(i, i + 100);
+      const featuresResponse = await spotifyApi.getAudioFeaturesForTracks(batch);
+      if (featuresResponse.body.audio_features) {
+        audioFeaturesList.push(...featuresResponse.body.audio_features.filter((f: any) => f !== null));
+      }
+    }
+
+    if (audioFeaturesList.length === 0) {
+      return res.status(400).json({
+        error: 'Could not fetch audio features',
+        code: 'NO_FEATURES'
+      });
+    }
+
+    // Calculate mood indicators
+    const avgEnergy = audioFeaturesList.reduce((sum, f) => sum + (f.energy || 0), 0) / audioFeaturesList.length;
+    const avgValence = audioFeaturesList.reduce((sum, f) => sum + (f.valence || 0), 0) / audioFeaturesList.length;
+    const avgDanceability = audioFeaturesList.reduce((sum, f) => sum + (f.danceability || 0), 0) / audioFeaturesList.length;
+    const avgTempo = audioFeaturesList.reduce((sum, f) => sum + (f.tempo || 0), 0) / audioFeaturesList.length;
+
+    // Determine mood category
+    let moodCategory = 'neutral';
+    let moodDescription = 'Balanced listening mood';
+    
+    if (avgValence > 0.7 && avgEnergy > 0.6) {
+      moodCategory = 'happy_energetic';
+      moodDescription = 'Upbeat and energetic vibes';
+    } else if (avgValence > 0.7 && avgEnergy <= 0.6) {
+      moodCategory = 'happy_calm';
+      moodDescription = 'Positive and relaxed';
+    } else if (avgValence <= 0.4 && avgEnergy > 0.6) {
+      moodCategory = 'intense';
+      moodDescription = 'Intense and powerful';
+    } else if (avgValence <= 0.4 && avgEnergy <= 0.4) {
+      moodCategory = 'melancholic';
+      moodDescription = 'Reflective and somber';
+    } else if (avgDanceability > 0.7) {
+      moodCategory = 'dance';
+      moodDescription = 'Ready to move';
+    } else if (avgTempo < 80) {
+      moodCategory = 'chill';
+      moodDescription = 'Chill and laid-back';
+    }
+
+    res.json({
+      mood: {
+        category: moodCategory,
+        description: moodDescription,
+        confidence: Math.min(100, Math.round((1 - Math.abs(avgValence - 0.5) - Math.abs(avgEnergy - 0.5)) * 100)),
+      },
+      audioFeatures: {
+        energy: Math.round(avgEnergy * 100),
+        valence: Math.round(avgValence * 100),
+        danceability: Math.round(avgDanceability * 100),
+        tempo: Math.round(avgTempo),
+      },
+      tracksAnalyzed: audioFeaturesList.length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * POST /api/mood/playlist
+ * Generate mood-based playlist
+ */
+app.post('/api/mood/playlist', extractSpotifyToken, async (req: SpotifyRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const { mood, limit = 20 } = req.body as { mood?: string; limit?: number };
+    
+    if (!userToken) {
+      return res.status(401).json({
+        error: 'Spotify token required',
+        code: 'TOKEN_REQUIRED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    
+    // Get recently played for seed tracks
+    const recentlyPlayed = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 5 });
+    const seedTracks = (recentlyPlayed.body.items || [])
+      .map((item: any) => item.track?.id)
+      .filter((id: any): id is string => typeof id === 'string')
+      .slice(0, 5);
+
+    // Mood-based recommendation parameters
+    const recommendationParams: any = {
+      limit: Math.min(limit, 50),
+      seed_tracks: seedTracks.length > 0 ? seedTracks : undefined,
+    };
+
+    // Adjust parameters based on mood
+    if (mood === 'happy_energetic') {
+      recommendationParams.target_energy = 0.8;
+      recommendationParams.target_valence = 0.8;
+      recommendationParams.min_energy = 0.6;
+      recommendationParams.min_valence = 0.6;
+    } else if (mood === 'happy_calm') {
+      recommendationParams.target_energy = 0.4;
+      recommendationParams.target_valence = 0.7;
+      recommendationParams.max_energy = 0.6;
+      recommendationParams.min_valence = 0.5;
+    } else if (mood === 'intense') {
+      recommendationParams.target_energy = 0.8;
+      recommendationParams.target_valence = 0.3;
+      recommendationParams.min_energy = 0.6;
+      recommendationParams.max_valence = 0.5;
+    } else if (mood === 'melancholic') {
+      recommendationParams.target_energy = 0.3;
+      recommendationParams.target_valence = 0.3;
+      recommendationParams.max_energy = 0.5;
+      recommendationParams.max_valence = 0.5;
+    } else if (mood === 'dance') {
+      recommendationParams.target_danceability = 0.8;
+      recommendationParams.target_energy = 0.7;
+      recommendationParams.min_danceability = 0.6;
+    } else if (mood === 'chill') {
+      recommendationParams.target_energy = 0.3;
+      recommendationParams.target_tempo = 70;
+      recommendationParams.max_energy = 0.5;
+    }
+
+    // Fallback to default genres if no seed tracks
+    if (!recommendationParams.seed_tracks || recommendationParams.seed_tracks.length === 0) {
+      recommendationParams.seed_genres = ['pop', 'indie', 'alternative'];
+    }
+
+    const recommendations = await spotifyApi.getRecommendations(recommendationParams);
+    
+    res.json({
+      mood,
+      tracks: recommendations.body.tracks,
+      total: recommendations.body.tracks.length,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/personality/listening
+ * Analyze listening personality comparing playlist curation vs actual listening
+ */
+app.get('/api/personality/listening', extractSpotifyToken, extractSupabaseToken, async (req: SpotifyRequest & SupabaseRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const userId = req.userId;
+    
+    if (!userToken || !userId || !supabase) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+
+    // Get top tracks (actual listening)
+    const [topTracks, topArtists] = await Promise.all([
+      spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopArtists({ time_range: 'medium_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+    ]);
+
+    // Get analyzed playlists (curation)
+    const { data: analyses } = await supabase
+      .from('analyses')
+      .select('audio_dna, genre_distribution, personality_type')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    // Analyze listening vs curation
+    const listeningGenres = new Set(
+      (topArtists.body.items || []).flatMap((a: any) => a.genres || [])
+    );
+    
+    const curationGenres = new Set(
+      (analyses || []).flatMap((a: any) => 
+        (a.genre_distribution || []).map((g: any) => g.name || g)
+      )
+    );
+
+    const overlapGenres = Array.from(listeningGenres).filter(g => curationGenres.has(g));
+    const listeningOnlyGenres = Array.from(listeningGenres).filter(g => !curationGenres.has(g));
+    const curationOnlyGenres = Array.from(curationGenres).filter(g => !listeningGenres.has(g));
+
+    // Calculate personality traits
+    const listeningPersonality = {
+      explorer: listeningOnlyGenres.length > overlapGenres.length,
+      loyalist: overlapGenres.length > listeningOnlyGenres.length,
+      curator: curationOnlyGenres.length > 0,
+      balanced: Math.abs(listeningOnlyGenres.length - curationOnlyGenres.length) <= 2,
+    };
+
+    // Determine primary personality
+    let primaryPersonality = 'balanced';
+    if (listeningPersonality.explorer) primaryPersonality = 'explorer';
+    else if (listeningPersonality.loyalist) primaryPersonality = 'loyalist';
+    else if (listeningPersonality.curator) primaryPersonality = 'curator';
+
+    res.json({
+      personality: {
+        type: primaryPersonality,
+        traits: listeningPersonality,
+        description: getPersonalityDescription(primaryPersonality),
+      },
+      comparison: {
+        listeningGenres: Array.from(listeningGenres),
+        curationGenres: Array.from(curationGenres),
+        overlap: overlapGenres,
+        listeningOnly: listeningOnlyGenres,
+        curationOnly: curationOnlyGenres,
+      },
+      stats: {
+        topTracksCount: topTracks.body.items?.length || 0,
+        topArtistsCount: topArtists.body.items?.length || 0,
+        analyzedPlaylistsCount: analyses?.length || 0,
+      },
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+// Helper function for personality descriptions
+function getPersonalityDescription(type: string): string {
+  const descriptions: { [key: string]: string } = {
+    explorer: 'You actively seek new music beyond your playlists. Your listening habits show you\'re always discovering new sounds and genres.',
+    loyalist: 'You stick close to what you know. Your playlists and listening habits align closely, showing consistent taste preferences.',
+    curator: 'You carefully craft playlists that may differ from your casual listening. You enjoy organizing music thoughtfully.',
+    balanced: 'You strike a balance between exploration and curation. Your playlists and listening habits complement each other well.',
+  };
+  return descriptions[type] || descriptions.balanced;
+}
+
+/**
+ * POST /api/playlists/optimize
+ * Suggest playlist optimizations based on taste profile and listening data
+ */
+app.post('/api/playlists/optimize', extractSpotifyToken, extractSupabaseToken, async (req: SpotifyRequest & SupabaseRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const userId = req.userId;
+    const { playlistId, url } = req.body as { playlistId?: string; url?: string };
+    
+    if (!userToken || !userId || !supabase) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
+    if (!playlistId && !url) {
+      return res.status(400).json({
+        error: 'Playlist ID or URL is required',
+        code: 'PLAYLIST_REQUIRED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    const extractedPlaylistId = playlistId || extractSpotifyId(url || '');
+    
+    if (!extractedPlaylistId) {
+      return res.status(400).json({
+        error: 'Invalid playlist ID or URL',
+        code: 'INVALID_PLAYLIST'
+      });
+    }
+
+    // Get playlist tracks
+    const playlist = await spotifyApi.getPlaylist(extractedPlaylistId);
+    const tracksResponse = await spotifyApi.getPlaylistTracks(extractedPlaylistId, { limit: 100 });
+    const playlistTracks = (tracksResponse.body.items || [])
+      .map((item: any) => item.track)
+      .filter((t: any) => t && t.id);
+    
+    if (playlistTracks.length === 0) {
+      return res.status(400).json({
+        error: 'Playlist has no tracks',
+        code: 'EMPTY_PLAYLIST'
+      });
+    }
+    
+    const playlistTrackIds = playlistTracks.map((t: any) => t.id);
+
+    // Get user's taste profile
+    const [topTracks, topArtists, savedTracks] = await Promise.all([
+      spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopArtists({ time_range: 'medium_term', limit: 50 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMySavedTracks({ limit: 50 }).catch(() => ({ body: { items: [] } })),
+    ]);
+
+    // Get audio features for playlist tracks
+    const audioFeaturesList: any[] = [];
+    for (let i = 0; i < playlistTrackIds.length; i += 100) {
+      const batch = playlistTrackIds.slice(i, i + 100);
+      const featuresResponse = await spotifyApi.getAudioFeaturesForTracks(batch);
+      if (featuresResponse.body.audio_features) {
+        audioFeaturesList.push(...featuresResponse.body.audio_features.filter((f: any) => f !== null));
+      }
+    }
+
+    // Calculate playlist averages (with safety check)
+    if (audioFeaturesList.length === 0) {
+      return res.status(400).json({
+        error: 'No audio features available for playlist',
+        code: 'NO_FEATURES'
+      });
+    }
+    
+    const avgEnergy = audioFeaturesList.reduce((sum, f) => sum + (f.energy || 0), 0) / audioFeaturesList.length;
+    const avgValence = audioFeaturesList.reduce((sum, f) => sum + (f.valence || 0), 0) / audioFeaturesList.length;
+    const avgDanceability = audioFeaturesList.reduce((sum, f) => sum + (f.danceability || 0), 0) / audioFeaturesList.length;
+
+    // Get user's preferred genres from top artists
+    const userGenres = new Set<string>();
+    (topArtists.body.items || []).forEach((artist: any) => {
+      if (artist.genres) {
+        artist.genres.forEach((g: string) => userGenres.add(g));
+      }
+    });
+
+    // Get playlist genres
+    const playlistArtistIds = new Set<string>();
+    playlistTracks.forEach((track: any) => {
+      if (track.artists) {
+        track.artists.forEach((artist: any) => {
+          if (artist.id) playlistArtistIds.add(artist.id);
+        });
+      }
+    });
+
+    const playlistArtists = await Promise.all(
+      Array.from(playlistArtistIds).slice(0, 50).map(id => 
+        spotifyApi.getArtist(id).catch(() => ({ body: { genres: [] } }))
+      )
+    );
+
+    const playlistGenres = new Set<string>();
+    playlistArtists.forEach((response: any) => {
+      if (response.body.genres) {
+        response.body.genres.forEach((g: string) => playlistGenres.add(g));
+      }
+    });
+
+    // Find missing genres
+    const missingGenres = Array.from(userGenres).filter(g => !playlistGenres.has(g));
+
+    // Generate recommendations to fill gaps
+    const topTrackIds = (topTracks.body.items || [])
+      .map((track: any) => track.id)
+      .filter((id: any): id is string => typeof id === 'string')
+      .slice(0, 5);
+
+    let suggestions: any[] = [];
+    if (topTrackIds.length > 0) {
+      const recommendations = await spotifyApi.getRecommendations({
+        seed_tracks: topTrackIds,
+        limit: 10,
+        target_energy: avgEnergy,
+        target_valence: avgValence,
+        target_danceability: avgDanceability,
+      });
+      suggestions = recommendations.body.tracks.filter((track: any) => 
+        !playlistTrackIds.includes(track.id)
+      ).slice(0, 5);
+    }
+
+    res.json({
+      playlist: {
+        id: extractedPlaylistId,
+        name: playlist.body.name,
+        trackCount: playlistTracks.length,
+      },
+      analysis: {
+        currentEnergy: Math.round(avgEnergy * 100),
+        currentValence: Math.round(avgValence * 100),
+        currentDanceability: Math.round(avgDanceability * 100),
+        genres: Array.from(playlistGenres),
+      },
+      optimization: {
+        missingGenres,
+        suggestions: suggestions.map((track) => ({
+          id: track.id,
+          name: track.name,
+          artists: track.artists.map((a: any) => a.name),
+          album: track.album.name,
+          albumArt: track.album.images?.[0]?.url,
+          preview_url: track.preview_url,
+        })),
+        score: calculateOptimizationScore(playlistGenres, userGenres, audioFeaturesList.length),
+      },
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+// Helper function to calculate optimization score
+function calculateOptimizationScore(playlistGenres: Set<string>, userGenres: Set<string>, trackCount: number): number {
+  const overlap = Array.from(playlistGenres).filter(g => userGenres.has(g)).length;
+  const totalUserGenres = userGenres.size;
+  const genreMatch = totalUserGenres > 0 ? (overlap / totalUserGenres) * 100 : 0;
+  const trackCountScore = Math.min(100, (trackCount / 50) * 100);
+  return Math.round((genreMatch * 0.7) + (trackCountScore * 0.3));
+}
+
+/**
+ * POST /api/playlists/generate
+ * Generate smart playlists based on taste profile, mood, or activity
+ */
+app.post('/api/playlists/generate', extractSpotifyToken, extractSupabaseToken, async (req: SpotifyRequest & SupabaseRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const userId = req.userId;
+    const { type, mood, activity, limit = 30 } = req.body as { 
+      type?: string; 
+      mood?: string; 
+      activity?: string; 
+      limit?: number;
+    };
+    
+    if (!userToken || !userId) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+    let recommendationParams: any = { limit: Math.min(limit, 50) };
+
+    // Activity-based playlists
+    if (activity === 'workout') {
+      const topTracks = await spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 5 })
+        .catch(() => ({ body: { items: [] } }));
+      recommendationParams.seed_tracks = (topTracks.body.items || [])
+        .map((t: any) => t.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      recommendationParams.target_energy = 0.8;
+      recommendationParams.min_energy = 0.7;
+      recommendationParams.target_danceability = 0.8;
+    } else if (activity === 'study') {
+      const savedTracks = await spotifyApi.getMySavedTracks({ limit: 10 })
+        .catch(() => ({ body: { items: [] } }));
+      recommendationParams.seed_tracks = (savedTracks.body.items || [])
+        .map((item: any) => item.track?.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      recommendationParams.target_energy = 0.3;
+      recommendationParams.max_energy = 0.5;
+      recommendationParams.target_instrumentalness = 0.5;
+    } else if (activity === 'party') {
+      const topTracks = await spotifyApi.getMyTopTracks({ time_range: 'short_term', limit: 5 })
+        .catch(() => ({ body: { items: [] } }));
+      recommendationParams.seed_tracks = (topTracks.body.items || [])
+        .map((t: any) => t.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      recommendationParams.target_energy = 0.9;
+      recommendationParams.target_danceability = 0.9;
+      recommendationParams.target_valence = 0.8;
+    } else if (mood) {
+      // Mood-based (reuse mood playlist logic)
+      const recentlyPlayed = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 5 })
+        .catch(() => ({ body: { items: [] } }));
+      recommendationParams.seed_tracks = (recentlyPlayed.body.items || [])
+        .map((item: any) => item.track?.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+      
+      if (mood === 'happy_energetic') {
+        recommendationParams.target_energy = 0.8;
+        recommendationParams.target_valence = 0.8;
+      } else if (mood === 'chill') {
+        recommendationParams.target_energy = 0.3;
+        recommendationParams.target_tempo = 70;
+      }
+    } else {
+      // Default: taste profile based
+      const topTracks = await spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 5 })
+        .catch(() => ({ body: { items: [] } }));
+      recommendationParams.seed_tracks = (topTracks.body.items || [])
+        .map((t: any) => t.id)
+        .filter((id: any): id is string => typeof id === 'string')
+        .slice(0, 5);
+    }
+
+    // Fallback to default genres
+    if (!recommendationParams.seed_tracks || recommendationParams.seed_tracks.length === 0) {
+      recommendationParams.seed_genres = ['pop', 'indie', 'rock'];
+    }
+
+    const recommendations = await spotifyApi.getRecommendations(recommendationParams);
+    
+    res.json({
+      type: type || 'taste_profile',
+      mood,
+      activity,
+      tracks: recommendations.body.tracks,
+      total: recommendations.body.tracks.length,
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/discovery/timeline
+ * Generate discovery timeline tracking music discovery and taste evolution
+ */
+app.get('/api/discovery/timeline', extractSpotifyToken, extractSupabaseToken, async (req: SpotifyRequest & SupabaseRequest, res) => {
+  try {
+    const userToken = req.spotifyToken;
+    const userId = req.userId;
+    
+    if (!userToken || !userId || !supabase) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
+    const spotifyApi = createSpotifyApi(userToken);
+
+    // Get top tracks across different time ranges
+    const [topTracksShort, topTracksMedium, topTracksLong, topArtistsShort, topArtistsLong] = await Promise.all([
+      spotifyApi.getMyTopTracks({ time_range: 'short_term', limit: 20 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopTracks({ time_range: 'medium_term', limit: 20 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopTracks({ time_range: 'long_term', limit: 20 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopArtists({ time_range: 'short_term', limit: 20 }).catch(() => ({ body: { items: [] } })),
+      spotifyApi.getMyTopArtists({ time_range: 'long_term', limit: 20 }).catch(() => ({ body: { items: [] } })),
+    ]);
+
+    // Get analyses from database (ordered by date)
+    const { data: analyses } = await supabase
+      .from('analyses')
+      .select('created_at, genre_distribution, personality_type, audio_dna')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+
+    // Analyze genre evolution
+    const genreEvolution: { [key: string]: { firstSeen: string; frequency: number } } = {};
+    const timelineEvents: any[] = [];
+
+    if (analyses) {
+      analyses.forEach((analysis: any, index: number) => {
+        const date = analysis.created_at;
+        const genres = analysis.genre_distribution || [];
+        
+        genres.forEach((genre: any) => {
+          const genreName = genre.name || genre;
+          if (!genreEvolution[genreName]) {
+            genreEvolution[genreName] = {
+              firstSeen: date,
+              frequency: 0,
+            };
+            timelineEvents.push({
+              type: 'genre_discovery',
+              date,
+              genre: genreName,
+              description: `Discovered ${genreName}`,
+            });
+          }
+          genreEvolution[genreName].frequency++;
+        });
+
+        if (index === 0 || index === analyses.length - 1) {
+          timelineEvents.push({
+            type: 'milestone',
+            date,
+            description: index === 0 
+              ? 'First playlist analyzed' 
+              : 'Latest playlist analyzed',
+            personality: analysis.personality_type,
+          });
+        }
+      });
+    }
+
+    // Compare short-term vs long-term to find new discoveries
+    const shortTermArtists = new Set((topArtistsShort.body.items || []).map((a: any) => a.id));
+    const longTermArtists = new Set((topArtistsLong.body.items || []).map((a: any) => a.id));
+    const newArtists = (topArtistsShort.body.items || [])
+      .filter((a: any) => !longTermArtists.has(a.id))
+      .slice(0, 5);
+
+    newArtists.forEach((artist: any) => {
+      timelineEvents.push({
+        type: 'artist_discovery',
+        date: new Date().toISOString(),
+        artist: {
+          id: artist.id,
+          name: artist.name,
+          genres: artist.genres || [],
+        },
+        description: `New favorite: ${artist.name}`,
+      });
+    });
+
+    // Sort timeline by date
+    timelineEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    // Calculate taste evolution metrics
+    const shortTermGenres = new Set(
+      (topArtistsShort.body.items || []).flatMap((a: any) => a.genres || [])
+    );
+    const longTermGenres = new Set(
+      (topArtistsLong.body.items || []).flatMap((a: any) => a.genres || [])
+    );
+    const genreExpansion = Array.from(shortTermGenres).filter(g => !longTermGenres.has(g)).length;
+    const genreStability = Array.from(shortTermGenres).filter(g => longTermGenres.has(g)).length;
+
+    res.json({
+      timeline: timelineEvents,
+      evolution: {
+        genreExpansion,
+        genreStability,
+        totalGenresDiscovered: Object.keys(genreEvolution).length,
+        newArtistsCount: newArtists.length,
+        analysesCount: analyses?.length || 0,
+      },
+      genres: Object.entries(genreEvolution)
+        .map(([name, data]) => ({ name, ...data }))
+        .sort((a, b) => b.frequency - a.frequency)
+        .slice(0, 10),
+      periods: {
+        shortTerm: {
+          tracks: topTracksShort.body.items?.length || 0,
+          artists: topArtistsShort.body.items?.length || 0,
+          genres: shortTermGenres.size,
+        },
+        longTerm: {
+          tracks: topTracksLong.body.items?.length || 0,
+          artists: topArtistsLong.body.items?.length || 0,
+          genres: longTermGenres.size,
+        },
+      },
+    });
+  } catch (error: unknown) {
+    handleSpotifyError(error, res);
+  }
+});
+
+/**
+ * GET /api/stats
+ * Get user statistics
+ */
+app.get('/api/stats', extractSupabaseToken, async (req: SupabaseRequest, res) => {
+  try {
+    const userId = req.userId;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        error: 'Authentication required',
+        code: 'UNAUTHORIZED'
+      });
+    }
+
     if (!supabase) {
       return res.status(503).json({ 
         error: 'Database not configured',
@@ -1080,21 +3681,11 @@ app.get('/api/stats', async (req, res) => {
       });
     }
 
-    // Verify the JWT token and get user
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    
-    if (authError || !user) {
-      return res.status(401).json({ 
-        error: 'Invalid or expired token',
-        code: 'INVALID_TOKEN'
-      });
-    }
-
     // Query user_stats view (RLS will automatically filter by user_id)
     const { data: stats, error: dbError } = await supabase
       .from('user_stats')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .single();
 
     if (dbError) {
