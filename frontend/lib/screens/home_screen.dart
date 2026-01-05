@@ -315,7 +315,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                                                 fontWeight: FontWeight.bold,
                                               ),
                                         ),
-                                        SizedBox(height: 4),
+                                        const SizedBox(height: 4),
                                         Text(
                                           'Unlock full analysis features',
                                           style: Theme.of(context)

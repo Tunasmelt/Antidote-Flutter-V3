@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:antidote_flutter/models/analysis.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('PlaylistAnalysis Model', () {
     test('creates PlaylistAnalysis from JSON', () {
       final json = {

@@ -1,4 +1,22 @@
 {
-  "dart.flutterSdkPath": "C:\\src\\flutter\\flutter"
+  "dart.flutterSdkPath": "C:\\src\\flutter\\flutter",
+  "cSpell.words": [
+    "Supabase",
+    "supabase",
+    "signup",
+    "signin",
+    "OAuth",
+    "Spotify",
+    "Antidote",
+    "gustavo",
+    "riverpod",
+    "syncfusion",
+    "audioplayers",
+    "INSTRUMENTALNESS",
+    "DANCEABILITY",
+    "ACOUSTICNESS",
+    "runbook",
+    "unmatch"
+  ]
 }
 

@@ -7,6 +7,30 @@ import { rateLimitUnauthenticated } from './middleware/rateLimiter';
 
 dotenv.config();
 
+// ============================================================================
+// ENVIRONMENT VALIDATION
+// ============================================================================
+
+// Validate required environment variables at startup
+const requiredEnvVars = ['SPOTIFY_CLIENT_ID', 'SPOTIFY_CLIENT_SECRET'];
+const recommendedEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
+
+const missingRequired = requiredEnvVars.filter(key => !process.env[key]);
+const missingRecommended = recommendedEnvVars.filter(key => !process.env[key]);
+
+if (missingRequired.length > 0) {
+  console.error('❌ FATAL: Missing required environment variables:');
+  console.error('   ' + missingRequired.join(', '));
+  console.error('   Application cannot function without these. Exiting.');
+  process.exit(1);
+}
+
+if (missingRecommended.length > 0) {
+  console.warn('⚠️  WARNING: Missing recommended environment variables:');
+  console.warn('   ' + missingRecommended.join(', '));
+  console.warn('   Database features will be disabled.');
+}
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -34,11 +58,47 @@ export const supabase: SupabaseClient | null = supabaseUrl && supabaseServiceKey
   : null;
 
 // Middleware
+// CORS Configuration - Whitelist specific origins
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? [
+      'https://antidote.app',
+      'https://www.antidote.app',
+      process.env.FRONTEND_URL,
+    ].filter(Boolean)
+  : [
+      'http://localhost:3000',
+      'http://localhost:5000',
+      'http://localhost:8080',
+      /^http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$/,  // Local network IPs
+      /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:\d+$/,
+    ];
+
 app.use(cors({
-  origin: true,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (typeof allowed === 'string') {
+        return origin === allowed;
+      }
+      if (allowed instanceof RegExp) {
+        return allowed.test(origin);
+      }
+      return false;
+    });
+
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS: Blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Spotify-Token'],
+  maxAge: 86400, // 24 hours
 }));
 app.use(express.json());
 
@@ -1240,7 +1300,8 @@ app.post('/api/analyze',
       valence: Math.round(avgValence * 100),
       acousticness: Math.round(avgAcousticness * 100),
       instrumentalness: Math.round(avgInstrumentalness * 100),
-      tempo: Math.round(avgTempo),
+      // Normalize tempo to 0-100 scale (assuming 60-200 BPM range)
+      tempo: Math.min(100, Math.max(0, Math.round(((avgTempo - 60) / 140) * 100))),
     };
     
     // Determine Personality
@@ -1663,6 +1724,8 @@ app.post('/api/battle',
       return {
         title: track?.name || 'Unknown',
         artist: track?.artists?.[0] || 'Unknown',
+        spotifyId: id,
+        uri: `spotify:track:${id}`,
       };
     });
     
@@ -3064,7 +3127,8 @@ app.post('/api/mood/analyze', extractSpotifyToken, async (req: SpotifyRequest, r
         energy: Math.round(avgEnergy * 100),
         valence: Math.round(avgValence * 100),
         danceability: Math.round(avgDanceability * 100),
-        tempo: Math.round(avgTempo),
+        // Normalize tempo to 0-100 scale for consistency
+        tempo: Math.min(100, Math.max(0, Math.round(((avgTempo - 60) / 140) * 100))),
       },
       tracksAnalyzed: audioFeaturesList.length,
       timestamp: new Date().toISOString(),
@@ -3713,14 +3777,58 @@ app.get('/api/stats', extractSupabaseToken, async (req: SupabaseRequest, res) =>
   }
 });
 
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Health check - Comprehensive monitoring endpoint
+app.get('/health', async (req, res) => {
+  const health: {
+    status: 'ok' | 'degraded';
+    timestamp: string;
+    uptime: number;
+    environment: string;
+    checks: {
+      database: 'healthy' | 'unhealthy' | 'not_configured';
+      spotify: 'healthy' | 'unhealthy' | 'not_configured';
+    };
+  } = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    checks: {
+      database: 'not_configured',
+      spotify: 'not_configured',
+    },
+  };
+
+  // Check database connectivity
+  if (supabase) {
+    try {
+      const { error } = await supabase.from('users').select('id').limit(1);
+      health.checks.database = error ? 'unhealthy' : 'healthy';
+      if (error) health.status = 'degraded';
+    } catch (e) {
+      health.checks.database = 'unhealthy';
+      health.status = 'degraded';
+    }
+  }
+
+  // Check Spotify API
+  if (process.env.SPOTIFY_CLIENT_ID) {
+    try {
+      const response = await fetch('https://api.spotify.com/v1', { method: 'HEAD' });
+      health.checks.spotify = response.ok ? 'healthy' : 'unhealthy';
+      if (!response.ok) health.status = 'degraded';
+    } catch (e) {
+      health.checks.spotify = 'unhealthy';
+      health.status = 'degraded';
+    }
+  }
+
+  res.status(health.status === 'ok' ? 200 : 503).json(health);
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`✅ Antidote Backend Server running on port ${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📝 Spotify Client ID: ${process.env.SPOTIFY_CLIENT_ID ? '✅ Configured' : '❌ Missing'}`);
   console.log(`🔐 Client Secret: ${process.env.SPOTIFY_CLIENT_SECRET ? '⚠️  Still configured (should be removed)' : '✅ Removed (correct)'}`);

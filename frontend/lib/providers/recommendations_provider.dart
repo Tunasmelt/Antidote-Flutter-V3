@@ -3,16 +3,21 @@ import '../models/liked_track.dart';
 import 'api_client_provider.dart';
 import 'liked_tracks_provider.dart';
 
-final recommendationsProvider = StateNotifierProvider.family<RecommendationsNotifier, AsyncValue<List<Map<String, dynamic>>>, String>((ref, strategyId) {
+final recommendationsProvider = StateNotifierProvider.family<
+    RecommendationsNotifier,
+    AsyncValue<List<Map<String, dynamic>>>,
+    String>((ref, strategyId) {
   return RecommendationsNotifier(ref, strategyId);
 });
 
-class RecommendationsNotifier extends StateNotifier<AsyncValue<List<Map<String, dynamic>>>> {
+class RecommendationsNotifier
+    extends StateNotifier<AsyncValue<List<Map<String, dynamic>>>> {
   final Ref _ref;
   final String strategyId;
   int _currentIndex = 0;
 
-  RecommendationsNotifier(this._ref, this.strategyId) : super(const AsyncValue.loading()) {
+  RecommendationsNotifier(this._ref, this.strategyId)
+      : super(const AsyncValue.loading()) {
     _loadRecommendations();
   }
 
@@ -37,7 +42,6 @@ class RecommendationsNotifier extends StateNotifier<AsyncValue<List<Map<String, 
       'return_to_familiar': 'return_familiar',
       'short_session': 'short_session',
       'energy_adjustment': 'energy_adjust',
-      'best_5_tracks': 'best_next', // Fallback to best_next
       'professional_discovery': 'professional_discovery',
       'taste_expansion': 'taste_expansion',
       'deep_cuts': 'deep_cuts',
@@ -68,12 +72,13 @@ class RecommendationsNotifier extends StateNotifier<AsyncValue<List<Map<String, 
     try {
       // Create LikedTrack from recommendation
       final likedTrack = LikedTrack(
-        id: track['id'] ?? track['spotify_id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        id: track['id'] ??
+            track['spotify_id'] ??
+            DateTime.now().millisecondsSinceEpoch.toString(),
         name: track['name'] ?? track['title'] ?? 'Unknown',
         artist: _extractArtist(track),
-        albumArt: track['albumArt'] ?? 
-            track['album_art'] ?? 
-            _extractAlbumArt(track),
+        albumArt:
+            track['albumArt'] ?? track['album_art'] ?? _extractAlbumArt(track),
         previewUrl: track['preview_url'] ?? track['previewUrl'],
         spotifyId: track['id'] ?? track['spotify_id'],
         likedAt: DateTime.now(),
@@ -130,7 +135,9 @@ class RecommendationsNotifier extends StateNotifier<AsyncValue<List<Map<String, 
   String? _extractAlbumArt(Map<String, dynamic> track) {
     if (track['albumArt'] != null) return track['albumArt'].toString();
     if (track['album_art'] != null) return track['album_art'].toString();
-    if (track['album'] is Map && track['album']['images'] is List && (track['album']['images'] as List).isNotEmpty) {
+    if (track['album'] is Map &&
+        track['album']['images'] is List &&
+        (track['album']['images'] as List).isNotEmpty) {
       return (track['album']['images'] as List)[0]['url'];
     }
     if (track['images'] is List && (track['images'] as List).isNotEmpty) {
@@ -144,4 +151,3 @@ class RecommendationsNotifier extends StateNotifier<AsyncValue<List<Map<String, 
     await _loadRecommendations();
   }
 }
-

@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:antidote_flutter/services/secure_token_storage.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('SecureTokenStorage', () {
     setUp(() async {
       // Clear all tokens before each test

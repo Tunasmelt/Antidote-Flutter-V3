@@ -37,16 +37,22 @@ class BattlePlaylist {
 class SharedTrack {
   final String title;
   final String artist;
+  final String? spotifyId;
+  final String? uri;
 
   SharedTrack({
     required this.title,
     required this.artist,
+    this.spotifyId,
+    this.uri,
   });
 
   factory SharedTrack.fromJson(Map<String, dynamic> json) {
     return SharedTrack(
       title: json['title'] ?? json['name'] ?? '',
       artist: json['artist'] ?? '',
+      spotifyId: json['spotifyId'] ?? json['spotify_id'] ?? json['id'],
+      uri: json['uri'],
     );
   }
 
@@ -81,10 +87,13 @@ class BattleResult {
 
   factory BattleResult.fromJson(Map<String, dynamic> json) {
     return BattleResult(
-      compatibilityScore: json['compatibilityScore'] ?? json['compatibility_score'] ?? 0,
+      compatibilityScore:
+          json['compatibilityScore'] ?? json['compatibility_score'] ?? 0,
       winner: json['winner'] ?? 'tie',
-      playlist1: BattlePlaylist.fromJson((json['playlist1'] as Map<String, dynamic>?) ?? <String, dynamic>{}),
-      playlist2: BattlePlaylist.fromJson((json['playlist2'] as Map<String, dynamic>?) ?? <String, dynamic>{}),
+      playlist1: BattlePlaylist.fromJson(
+          (json['playlist1'] as Map<String, dynamic>?) ?? <String, dynamic>{}),
+      playlist2: BattlePlaylist.fromJson(
+          (json['playlist2'] as Map<String, dynamic>?) ?? <String, dynamic>{}),
       sharedArtists: (json['sharedArtists'] ?? json['shared_artists'] ?? [])
           .map<String>((a) => a.toString())
           .toList(),
@@ -92,10 +101,15 @@ class BattleResult {
           .map<String>((g) => g.toString())
           .toList(),
       sharedTracks: (json['sharedTracks'] ?? json['shared_tracks'] ?? [])
-          .map<SharedTrack>((t) => SharedTrack.fromJson(t is Map<String, dynamic> ? Map<String, dynamic>.from(t) : {'title': t.toString(), 'artist': ''}))
+          .map<SharedTrack>((t) => SharedTrack.fromJson(
+              t is Map<String, dynamic>
+                  ? Map<String, dynamic>.from(t)
+                  : {'title': t.toString(), 'artist': ''}))
           .toList(),
       audioData: (json['audioData'] ?? json['audio_data'] ?? [])
-          .map<Map<String, dynamic>>((d) => d is Map<String, dynamic> ? Map<String, dynamic>.from(d) : <String, dynamic>{})
+          .map<Map<String, dynamic>>((d) => d is Map<String, dynamic>
+              ? Map<String, dynamic>.from(d)
+              : <String, dynamic>{})
           .toList(),
     );
   }
@@ -113,4 +127,3 @@ class BattleResult {
     };
   }
 }
-

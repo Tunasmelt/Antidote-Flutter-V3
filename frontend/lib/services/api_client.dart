@@ -48,9 +48,13 @@ class ApiClient {
       onRequest: (options, handler) async {
         // Add Supabase auth token if available
         if (_authService != null) {
-          final token = _authService.getAuthToken();
-          if (token != null) {
-            options.headers['Authorization'] = 'Bearer $token';
+          try {
+            final token = _authService.getAuthToken();
+            if (token != null && token.isNotEmpty) {
+              options.headers['Authorization'] = 'Bearer $token';
+            }
+          } catch (e) {
+            // Continue without auth token - guest mode
           }
 
           // Add Spotify access token for endpoints that need it
@@ -64,6 +68,7 @@ class ApiClient {
             } catch (e) {
               // If token fetch fails, continue without it
               // Backend will handle the error appropriately
+              // This allows guest mode to work for features that support it
             }
           }
         }
@@ -157,18 +162,9 @@ class ApiClient {
 
   Future<PlaylistAnalysis> analyzePlaylist(String url) async {
     try {
-      // Include Spotify token in request body as well (for backend compatibility)
-      final requestData = {'url': url};
-      if (_authService != null) {
-        final spotifyToken = await _authService.getSpotifyAccessToken();
-        if (spotifyToken != null) {
-          requestData['spotify_token'] = spotifyToken;
-        }
-      }
-
       final response = await _dio.post(
         '/api/analyze',
-        data: requestData,
+        data: {'url': url},
       );
       return PlaylistAnalysis.fromJson(response.data);
     } on DioException catch (e) {
@@ -178,18 +174,9 @@ class ApiClient {
 
   Future<BattleResult> battlePlaylists(String url1, String url2) async {
     try {
-      // Include Spotify token in request body
-      final requestData = {'url1': url1, 'url2': url2};
-      if (_authService != null) {
-        final spotifyToken = await _authService.getSpotifyAccessToken();
-        if (spotifyToken != null) {
-          requestData['spotify_token'] = spotifyToken;
-        }
-      }
-
       final response = await _dio.post(
         '/api/battle',
-        data: requestData,
+        data: {'url1': url1, 'url2': url2},
       );
       return BattleResult.fromJson(response.data);
     } on DioException catch (e) {
@@ -418,23 +405,14 @@ class ApiClient {
     String? coverUrl,
   }) async {
     try {
-      // Include Spotify token in request body
-      final requestData = {
-        'name': name,
-        'description': description,
-        'tracks': tracks,
-        'coverUrl': coverUrl,
-      };
-      if (_authService != null) {
-        final spotifyToken = await _authService.getSpotifyAccessToken();
-        if (spotifyToken != null) {
-          requestData['spotify_token'] = spotifyToken;
-        }
-      }
-
       final response = await _dio.post(
         '/api/playlists',
-        data: requestData,
+        data: {
+          'name': name,
+          'description': description,
+          'tracks': tracks,
+          'coverUrl': coverUrl,
+        },
       );
       return Map<String, dynamic>.from(response.data);
     } on DioException catch (e) {
@@ -456,21 +434,13 @@ class ApiClient {
     required List<String> trackIds,
   }) async {
     try {
-      final requestData = {
-        'name': name,
-        if (description != null) 'description': description,
-        'track_ids': trackIds,
-      };
-      if (_authService != null) {
-        final spotifyToken = await _authService.getSpotifyAccessToken();
-        if (spotifyToken != null) {
-          requestData['spotify_token'] = spotifyToken;
-        }
-      }
-
       final response = await _dio.post(
         '/api/playlists/merge',
-        data: requestData,
+        data: {
+          'name': name,
+          if (description != null) 'description': description,
+          'track_ids': trackIds,
+        },
       );
       return Map<String, dynamic>.from(response.data);
     } on DioException catch (e) {

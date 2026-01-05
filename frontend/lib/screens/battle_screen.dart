@@ -8,6 +8,7 @@ import '../utils/theme.dart';
 import '../models/battle.dart';
 import '../providers/battle_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/api_client_provider.dart';
 import '../widgets/animated_radar_chart.dart';
 import '../widgets/spotify_connect_prompt.dart';
 import '../widgets/error_view.dart';
@@ -1296,6 +1297,25 @@ class _BattleScreenState extends ConsumerState<BattleScreen>
       BuildContext context, BattleResult battle) async {
     if (_selectedTracks.isEmpty) return;
 
+    // Check if user is authenticated with Spotify
+    final authService = ref.read(authServiceProvider);
+    final spotifyToken = await authService.getSpotifyAccessToken();
+
+    // Check if widget is still mounted before showing snackbar
+    if (!context.mounted) return;
+
+    if (spotifyToken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('Please connect your Spotify account to create playlists'),
+          backgroundColor: Colors.redAccent,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
     // Show loading dialog
     showDialog(
       context: context,
@@ -1308,38 +1328,56 @@ class _BattleScreenState extends ConsumerState<BattleScreen>
     );
 
     try {
-      // Get selected track IDs (assuming shared tracks have spotify IDs)
-      // For now, we'll use track titles as identifiers
+      // Get selected tracks from shared tracks
       final selectedTracks = _selectedTracks.map((index) {
         return battle.sharedTracks[index];
       }).toList();
 
-      // Note: This requires backend support for creating playlists from track names
-      // For now, show a message
+      // Prepare track data for API
+      // Note: SharedTrack only has title and artist, not URIs
+      // Backend will need to search for tracks by name/artist
+      final trackData = selectedTracks.map((track) {
+        return {
+          'name': track.title,
+          'artist': track.artist,
+        };
+      }).toList();
+
+      // Create playlist name from battle
+      final playlistName =
+          'Battle Merge: ${battle.playlist1.name} × ${battle.playlist2.name}';
+      final description =
+          'Merged playlist from Antidote battle with ${selectedTracks.length} shared tracks';
+
+      // Call API to create playlist
+      final apiClient = ref.read(apiClientProvider);
+      final result = await apiClient.createPlaylist(
+        name: playlistName,
+        description: description,
+        tracks: trackData,
+      );
+
       if (context.mounted) {
         Navigator.pop(context); // Close loading dialog
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                'Creating playlist with ${selectedTracks.length} tracks...'),
-            backgroundColor: AppTheme.cardBackground,
-            duration: const Duration(seconds: 2),
+                'Playlist "${result['name']}" created with ${result['trackCount']} tracks!'),
+            backgroundColor: AppTheme.success,
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'Open',
+              textColor: AppTheme.primary,
+              onPressed: () {
+                // Open Spotify URL if available
+                if (result['url'] != null) {
+                  // You could use url_launcher here to open the playlist
+                }
+              },
+            ),
           ),
         );
-
-        // Note: Playlist creation requires backend support for creating playlists from track names
-        // For now, show success message
-        Future.delayed(const Duration(seconds: 2), () {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Playlist creation feature coming soon!'),
-                backgroundColor: AppTheme.success,
-                duration: Duration(seconds: 2),
-              ),
-            );
-          }
-        });
       }
     } catch (e) {
       if (context.mounted) {

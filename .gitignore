@@ -34,20 +34,27 @@ linked_*.json
 unlinked_*.json
 
 # ============================================================================
-# ENVIRONMENT VARIABLES
+# ENVIRONMENT VARIABLES & SECRETS
 # ============================================================================
-# Backend: ALL .env files should be ignored (no exceptions except .env.example)
+# CRITICAL: Never commit .env files with real credentials
+# Backend: ALL .env files should be ignored
 backend/.env
 backend/.env.*
+!backend/env.example
 !backend/.env.example
 
-# Frontend: Only ignore files with actual secrets
-frontend/.env.local
-frontend/*.env.local
-frontend/.env.*.local
+# Frontend: ALL .env files should be ignored
+frontend/.env
+frontend/.env.*
+frontend/**/.env
+frontend/**/.env.*
+!frontend/.env.example
+!frontend/.env.*.example
 
 # Root level
 .env
+.env.*
+!.env.example
 .env.local
 .env.*.local
 .env.development.local

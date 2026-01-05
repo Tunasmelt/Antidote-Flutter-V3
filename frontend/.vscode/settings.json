@@ -6,6 +6,24 @@
     "**/.git": true,
     "**/.dart_tool": true,
     "**/build": true
-  }
+  },
+  "cSpell.words": [
+    "Supabase",
+    "supabase",
+    "signup",
+    "signin",
+    "OAuth",
+    "Spotify",
+    "Antidote",
+    "gustavo",
+    "riverpod",
+    "syncfusion",
+    "audioplayers",
+    "INSTRUMENTALNESS",
+    "DANCEABILITY",
+    "ACOUSTICNESS",
+    "runbook",
+    "unmatch"
+  ]
 }
 
